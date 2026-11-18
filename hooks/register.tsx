@@ -393,7 +393,15 @@ const gather = async ($: EngineInterface, t: number) => {
       // a file mid-write or broken: skip it this round
     }
   }
-  found.sort((a, b) => a.folder.localeCompare(b.folder) || a.sessionId.localeCompare(b.sessionId))
+  // sessions at work first (a subagent running, or a plan step in progress), then by folder
+  const isWorking = (snap: SessionSnapshot) =>
+    snap.agents.some(a => LIVE.includes(a.status)) || snap.plan.some(st => st.status === 'in_progress')
+  found.sort(
+    (a, b) =>
+      Number(isWorking(b)) - Number(isWorking(a)) ||
+      a.folder.localeCompare(b.folder) ||
+      a.sessionId.localeCompare(b.sessionId),
+  )
   const before = await read($, others)
   if (JSON.stringify(before) !== JSON.stringify(found)) await update($, others, () => found)
 }

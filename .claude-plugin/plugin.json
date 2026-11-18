@@ -1,6 +1,6 @@
 {
   "name": "subagents-pane",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "See what your agents, skills and plans are doing: a live pane with a list and a graph across all Claude Code sessions",
   "author": { "name": "qaokss", "url": "https://github.com/qaokss" },
   "license": "MIT",

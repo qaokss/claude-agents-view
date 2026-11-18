@@ -659,3 +659,39 @@ test('in the graph, finished subagents with no step fold away at the next messag
   expect(await later.find({ type: 'Text', text: /Finished subagents \(1\)/ })).toBeTruthy()
   await later.unmount()
 })
+
+test('other sessions at work come first', async ($, on) => {
+  const clock = mock.clock(on, { now: 5_000_000 })
+  const snap = (id: string, folder: string, topic: string, busy: boolean) => ({
+    sessionId: id, title: '', folder, topic,
+    plan: [{ content: `${topic} step`, status: busy ? 'in_progress' : 'completed' }],
+    history: [],
+    agents: busy ? [{ id: `${id}-a`, description: 'Busy agent', type: 'Explore', prompt: 'x', status: 'running', startedAt: 4_990_000, toolCalls: 1 }] : [],
+    updatedAt: 4_999_000,
+  })
+  const files: Record<string, unknown> = {
+    'idle-1.json': snap('idle-1', 'a-app', 'Idle session', false),
+    'busy-1.json': snap('busy-1', 'z-app', 'Busy session', true),
+  }
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.list', () => ({ value: Object.keys(files).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 4_999_000, isLink: false })) }))
+  on('fs.read', (_, e) => ({ value: JSON.stringify(files[String((e as { path: string }).path).split('/').pop()!] ?? {}) }))
+
+  await $.session.start({ cwd: '/Users/u/scratch', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const texts = (await ui.findAll({ type: 'Text' })).map(n => String((n as { text?: string }).text ?? ''))
+  const busy = texts.findIndex(x => /Busy session/.test(x))
+  const idle = texts.findIndex(x => /Idle session/.test(x))
+  expect(busy).toBeGreaterThan(-1)
+  expect(idle).toBeGreaterThan(busy)
+  await ui.unmount()
+})
