@@ -494,6 +494,14 @@ const disk = (on: TestOn, files: Record<string, string>, mtime: () => number) =>
     return { value: new TextDecoder().decode(new TextEncoder().encode(text).slice(offset)) }
   })
   on('fs.exists', (_, e) => ({ value: String((e as { path?: string }).path) in files }))
+  // `tail -c +N path`: the file from byte N on
+  on('process.run', (_, e) => {
+    const [cmd, , from, path] = (e as { argv: string[] }).argv
+    const text = cmd === 'tail' ? files[path!] : undefined
+    if (text === undefined) return { value: { exitCode: 1, stdout: '', stderr: 'missing', isStdoutTruncated: false, isStderrTruncated: false } }
+    const rest = new TextDecoder().decode(new TextEncoder().encode(text).slice(Number(from!.slice(1)) - 1))
+    return { value: { exitCode: 0, stdout: rest, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
 }
 
 test('a Codex run shows as a card with its tokens and its own subagent under it', async ($, on) => {

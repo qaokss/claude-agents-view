@@ -71,6 +71,12 @@ const RUNS_MAX = 30
 const turnAt = atom({ plugin: 'subagents-pane', key: 'turnAt' } as const, 0)
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 
+// Newer engines count each agent's tokens on its row; older ones leave it out.
+const tokenCountOf = (info: object) => {
+  const n = (info as { tokenCount?: unknown }).tokenCount
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0
+}
+
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
 const isLive = (a: TrackedAgent) => LIVE.includes(a.status)
 
@@ -234,7 +240,7 @@ const sync = async ($: EngineInterface) => {
         status: info.status,
         startedAt: t,
         toolCalls: 0,
-        ...(info.tokenCount > 0 ? { tokens: info.tokenCount } : {}),
+        ...(tokenCountOf(info) > 0 ? { tokens: tokenCountOf(info) } : {}),
       })
       changed = true
     } else {
@@ -245,7 +251,7 @@ const sync = async ($: EngineInterface) => {
       }
       // The engine reads an agent's tokens every few seconds; a finished one
       // keeps its last count after its row is gone.
-      if (info.tokenCount > 0 && info.tokenCount !== known.tokens) next = { ...next, tokens: info.tokenCount }
+      if (tokenCountOf(info) > 0 && tokenCountOf(info) !== known.tokens) next = { ...next, tokens: tokenCountOf(info) }
       if (next !== known) {
         byId.set(info.id, next)
         changed = true

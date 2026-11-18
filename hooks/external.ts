@@ -66,31 +66,35 @@ export const runDir = (command: string, cwd: string, home: string) => {
 
 // ---- reading logs a few lines at a time ------------------------------------------
 
-type Tail = { offset: number; rest: string; size: number; mtimeMs: number }
+type Tail = { offset: number; size: number; mtimeMs: number }
 const tails = new Map<string, Tail>()
-const CHUNK = 1024 * 1024
 
-/** The complete lines added to a file since the last call, parsed; [] when nothing changed. */
+/**
+ * The complete lines added to a file since the last call, parsed; [] when
+ * nothing changed. `$.fs.read` reads whole files only, so the new part comes
+ * from `tail -c +N`, at most 4 MiB a call; a line not yet ended is read next
+ * time, from its start.
+ */
 async function newLines($: EngineInterface, path: string, size: number, mtimeMs: number) {
-  const tail = tails.get(path) ?? { offset: 0, rest: '', size: -1, mtimeMs: 0 }
+  const tail = tails.get(path) ?? { offset: 0, size: -1, mtimeMs: 0 }
   if (tail.size === size && tail.mtimeMs === mtimeMs) return []
-  if (size < tail.offset) {
-    tail.offset = 0
-    tail.rest = ''
-  }
+  if (size < tail.offset) tail.offset = 0
   const out: Record<string, unknown>[] = []
-  while (tail.offset < size) {
-    const text = (await $.fs.read(path, { offset: tail.offset, length: Math.min(CHUNK, size - tail.offset) })) as string
-    if (!text) break
-    tail.offset += utf8Length(text)
-    const lines = (tail.rest + text).split('\n')
-    tail.rest = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        out.push(JSON.parse(line) as Record<string, unknown>)
-      } catch {
-        // a line cut mid-write is read whole next time; anything else is skipped
+  if (tail.offset < size) {
+    const ran = await $.process.run(['tail', '-c', `+${tail.offset + 1}`, path], { timeoutMs: 10_000 })
+    if (ran.exitCode !== 0) return []
+    const text = ran.stdout
+    const end = text.lastIndexOf('\n')
+    if (end >= 0) {
+      const whole = text.slice(0, end + 1)
+      tail.offset += utf8Length(whole)
+      for (const line of whole.split('\n')) {
+        if (!line.trim()) continue
+        try {
+          out.push(JSON.parse(line) as Record<string, unknown>)
+        } catch {
+          // a damaged line is skipped
+        }
       }
     }
   }
