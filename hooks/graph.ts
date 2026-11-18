@@ -207,14 +207,20 @@ const agentNode = (
   if (shown < chipsIn.length) {
     chips.push(`<text x="${cx + 2}" y="${y + 50}" class="tiny">+${chipsIn.length - shown}</text>`)
   }
-  if (chipsIn.length === 0) {
+  if (chipsIn.length === 0 && a.vendor) {
+    // a Codex or Gemini card: its CLI's tools are not counted, so its vendor instead
+    const label = a.vendor === 'codex' ? 'Codex' : 'Gemini'
+    const cw = Math.round(label.length * 5.6 + 12)
+    chips.push(`<rect x="${x + 26}" y="${y + 39}" width="${cw}" height="15" rx="7.5" class="chip vendor ${a.vendor}"/>
+      <text x="${x + 26 + cw / 2}" y="${y + 50}" class="chiptext mid">${label}</text>`)
+  } else if (chipsIn.length === 0) {
     chips.push(`<text x="${x + 26}" y="${y + 50}" class="tiny">${esc(wd.noTools)}</text>`)
   }
 
   const tip = [
     a.description || wd.noDescription,
     `${a.type} · ${wd.agentStatus[a.status]} · ${time}${tok ? ` · ${wd.tokens(tok)}` : ''}`,
-    wd.toolCalls(a.toolCalls),
+    a.vendor ? '' : wd.toolCalls(a.toolCalls),
     ...counts.map(([n, c]) => `  ${n}: ${c}`),
     ...agentSkills.map(k => `  ${wd.skillWord} ${skillTip(k, wd)}`),
     a.prompt ? `\n${cut(a.prompt, 300)}` : '',
@@ -253,6 +259,7 @@ const STYLE = `<style>
   .node.run { stroke: var(--accent); } .node.ok, .node.off { opacity: 0.78; }
   .node.bad { stroke: var(--bad); } .node.wait { stroke: var(--warn); }
   .chip { fill: var(--chip); stroke: none; } .chip.now { fill: none; stroke: var(--accent); stroke-width: 1.2; }
+  .chip.vendor { fill: none; stroke: var(--dim); stroke-width: 1; }
   .chip.skill { fill: none; stroke: var(--dim); stroke-width: 1; stroke-dasharray: 1 2; }
   .chip.skill.active { stroke: var(--accent); } .chip.skill.failed { stroke: var(--bad); }
   .pill { fill: none; stroke: var(--line); stroke-width: 1; } .pill.active { stroke: var(--accent); } .pill.failed { stroke: var(--bad); }
@@ -317,8 +324,20 @@ const byPlan = <T>(snap: SessionSnapshot, items: T[], stepOf: (t: T) => string |
   return { current: lists[plans.length - 1]!, past: lists.slice(0, -1), loose }
 }
 
+/** Agents that hang under no other card of the session (a run's own agents hang under it). */
+const topAgents = (snap: SessionSnapshot) => {
+  const ids = new Set(snap.agents.map(a => a.id))
+  return snap.agents.filter(a => !a.parentId || !ids.has(a.parentId))
+}
+const childrenMap = (snap: SessionSnapshot) => {
+  const ids = new Set(snap.agents.map(a => a.id))
+  const map = new Map<string, TrackedAgent[]>()
+  for (const a of snap.agents) if (a.parentId && ids.has(a.parentId)) map.set(a.parentId, [...(map.get(a.parentId) ?? []), a])
+  return map
+}
+
 export const assignAgents = (snap: SessionSnapshot) =>
-  byPlan(snap, snap.agents, a => a.step, a => a.startedAt)
+  byPlan(snap, topAgents(snap), a => a.step, a => a.startedAt)
 
 /** The main conversation's skills split over plans; a subagent's go on its card. */
 export const assignSkills = (snap: SessionSnapshot) =>
@@ -336,7 +355,33 @@ const trim = (agents: TrackedAgent[]) => {
   return agents.filter(a => isLive(a) || done.includes(a))
 }
 
-type Ctx = { W: number; now: number; show: Show; agentSkills: Map<string, TrackedSkill[]>; w: Words; tokens: boolean }
+type Ctx = {
+  W: number
+  now: number
+  show: Show
+  agentSkills: Map<string, TrackedSkill[]>
+  w: Words
+  tokens: boolean
+  children: Map<string, TrackedAgent[]>
+}
+
+const CHILD_INDENT = 18
+const CHILD_GAP = 6
+
+/** An agent's card and, under it, its own agents' cards, each indented. */
+const agentStack = (parts: string[], a: TrackedAgent, x: number, y: number, w: number, ctx: Ctx, depth = 0): number => {
+  parts.push(agentNode(a, x, y, w, ctx.now, ctx.show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w, ctx.tokens))
+  let h = AGENT_H
+  const kids = depth < 3 ? trim(ctx.children.get(a.id) ?? []) : []
+  for (const k of kids) {
+    const ky = y + h + CHILD_GAP
+    parts.push(`<path d="M${x + 12},${y + h} V${ky + AGENT_H / 2} H${x + CHILD_INDENT}" class="edge${isLive(k) ? ' live' : ''}"/>`)
+    h += CHILD_GAP + agentStack(parts, k, x + CHILD_INDENT, ky, w - CHILD_INDENT, ctx, depth + 1)
+  }
+  return h
+}
+const stackHeight = (a: TrackedAgent, ctx: Ctx, depth = 0): number =>
+  AGENT_H + (depth < 3 ? trim(ctx.children.get(a.id) ?? []) : []).reduce((n, k) => n + CHILD_GAP + stackHeight(k, ctx, depth + 1), 0)
 
 // A plan as a trunk of steps from `top`: each step's skills as pills under its
 // text, its agents as cards to the right.
@@ -373,7 +418,8 @@ const drawPlan = (
     const cy = y + (mine.length ? Math.max(textH, 22) / 2 + 6 : textH / 2)
     const pillY = cy + textH / 2 + 2
     const pillsH = ks.length ? pillRows(ks, TEXT_X, PAD + leftW).rows * PILL_ROW : 0
-    const agentsH = mine.length * (AGENT_H + AGENT_GAP) - (mine.length ? AGENT_GAP : 0)
+    const heights = mine.map(a => stackHeight(a, ctx))
+    const agentsH = heights.reduce((n, h) => n + h + AGENT_GAP, 0) - (mine.length ? AGENT_GAP : 0)
     const rowH = Math.max(cy - y + textH / 2 + pillsH, agentsH)
     const sc = isPast && st.status !== 'completed' ? 'skip' : STEP_CLASS[st.status]
     parts.push(`<g><title>${esc(sc === 'skip' ? `${st.content}\n${ctx.w.stepDropped}` : st.content)}</title>
@@ -385,10 +431,11 @@ const drawPlan = (
       parts.push(skillLink(cy + 6, pillY + PILL_H / 2, TEXT_X))
       drawPills(parts, ks, TEXT_X, pillY, PAD + leftW, ctx.w)
     }
+    let ay = y
     mine.forEach((a, i) => {
-      const ay = y + i * (AGENT_H + AGENT_GAP)
       parts.push(edge(PAD + leftW + 4, cy, ax, ay + AGENT_H / 2, isLive(a)))
-      parts.push(agentNode(a, ax, ay, aw, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w, ctx.tokens))
+      agentStack(parts, a, ax, ay, aw, ctx)
+      ay += heights[i]! + AGENT_GAP
     })
     bottom = cy
     y += rowH + 10
@@ -422,9 +469,9 @@ const drawTimeline = (
     if (it.agent) {
       const cy = y + AGENT_H / 2
       parts.push(edge(TRUNK, cy, ax, cy, isLive(it.agent)))
-      parts.push(agentNode(it.agent, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(it.agent.id) ?? [] : [], ctx.w, ctx.tokens))
+      const h = agentStack(parts, it.agent, ax, y, W - PAD - ax, ctx)
       bottom = cy
-      y += TIMELINE_ROW
+      y += Math.max(TIMELINE_ROW, h + TIMELINE_ROW - AGENT_H)
       i++
     } else {
       // consecutive skills share a row of pills
@@ -489,7 +536,7 @@ export const bodyPicture = (
   tokens = true,
 ): Picture => {
   const W = Math.max(300, Math.round(width))
-  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens }
+  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens, children: childrenMap(snap) }
   const ag = assignAgents(snap)
   const sk = assignSkills(snap)
   const parts: string[] = []
@@ -497,15 +544,14 @@ export const bodyPicture = (
 
   if (!show.plans) {
     const allSkills = (snap.skills ?? []).filter(k => !k.by)
-    y = drawTimeline(parts, snap.agents, allSkills, y, 0, ctx)
+    y = drawTimeline(parts, topAgents(snap), allSkills, y, 0, ctx)
   } else {
     // what ran with no plan hangs off the frame, above the plan
     const looseAgents = show.agents ? trim(ag.loose) : []
     const ax = PAD + Math.round((W - 2 * PAD) * 0.46) + 22
     for (const a of looseAgents) {
       parts.push(edge(TRUNK, 0, ax, y + AGENT_H / 2, isLive(a)))
-      parts.push(agentNode(a, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w, ctx.tokens))
-      y += AGENT_H + AGENT_GAP
+      y += agentStack(parts, a, ax, y, W - PAD - ax, ctx) + AGENT_GAP
     }
     if (show.skills && sk.loose.length) {
       parts.push(skillLink(0, y + PILL_H / 2, TEXT_X))
@@ -531,7 +577,7 @@ export const planPicture = (
 ): Picture => {
   const W = Math.max(300, Math.round(width))
   const steps = snap.history?.[index]?.steps ?? []
-  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens }
+  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens, children: childrenMap(snap) }
   const parts: string[] = []
   const y = drawPlan(parts, steps, assignAgents(snap).past[index] ?? [], assignSkills(snap).past[index] ?? [], PAD, PAD, ctx, true)
   return picture(W, Math.max(40, Math.round(y + PAD - 10)), parts)

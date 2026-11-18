@@ -14,6 +14,7 @@
 - **Skills too.** Skills the conversation calls appear as pills under their step (◆ active, ◇ used, red on error, `×2` when repeated); skills a subagent calls sit on its card.
 - **List or graph.** A compact list for narrow panes, or an animated graph: flowing edges to running agents, pulsing steps.
 - **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙.
+- **Codex and Gemini too.** When Claude (or one of its subagents) runs `codex` or `gemini` through Bash, the run gets a card of its own, with its model and tokens, and the agents *it* spawns hang under it, and theirs under them.
 - **Filters.** `● Plans ● Agents ● Skills` — turn any of them off. With plans off the graph becomes a timeline.
 - **All-time statistics.** Which skills and subagent types you use most, counted from every transcript on your machine.
 
@@ -73,6 +74,7 @@ It is a Claude Code **hooks module** (`hooks/register.tsx`) — no server, no ne
 - **Plans** come from Claude's own task-list tool calls; **subagents** from `agent.spawn` and their turns; **skills** from `Skill` tool calls; **tool counts** from each subagent's tool calls.
 - **Sharing between sessions:** every session writes a small JSON snapshot to `~/.claude/mods-data/subagents-pane/sessions/` once a second when something changes (and a heartbeat every 30 s). The pane reads the others' snapshots; a session that stops updating disappears after 90 s.
 - **Tokens** come from the engine: a subagent's `tokenCount` in `$.agent.list()` (its latest request's input plus all its output, the figure Claude Code's own agent list shows), the session's from `$.session.usage()`.
+- **Codex and Gemini runs** are Bash calls whose command starts `codex`, `gemini`, `npx @openai/codex` or `npx @google/gemini-cli`. Neither CLI reports to Claude Code, so the pane reads the session log each one keeps, a few lines at a time while the run lasts: Codex's `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (`session_meta`, `token_count`, `task_complete`; a subagent's log names its parent thread) and Gemini's `~/.gemini/tmp/<project>/chats/session-*.jsonl` (per-message `tokens`; a subagent's chat sits in `chats/<parent session>/`). A run's log is the first one its CLI began, after the call, in the folder the command works in (`cd … &&`, Codex's `-C`). Tokens are counted as for Claude: the last request's input plus all output. A run in the foreground ends when its Bash call returns; in the background, at Codex's `task_complete`, or once a Gemini chat ends on the model's answer and stays still for 20 s.
 - **Session names** are the chat titles Claude Code keeps next to each transcript (`custom-title.json`).
 - **Statistics** scan your transcripts in `~/.claude/projects` with `grep` while the statistics card is open (every 30 s), counting each `Skill` and `Agent` call once.
 - **Pictures** in graph view are SVGs drawn by `hooks/graph.ts`, animated with SMIL, sized to the pane.

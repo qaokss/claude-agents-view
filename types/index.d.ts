@@ -1,6 +1,9 @@
 export type AgentStatusWord =
   | 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
 
+/** A frontier CLI other than Claude that Claude ran through Bash. */
+export type ExternalVendor = 'codex' | 'gemini'
+
 export type TrackedAgent = {
   id: string
   description: string
@@ -17,6 +20,27 @@ export type TrackedAgent = {
   tools?: Record<string, number>
   /** Tokens it has used, as the engine counts them: its latest request's input and all its output. */
   tokens?: number
+  /** Set on a card for a Codex or Gemini run, or for one of their own agents. */
+  vendor?: ExternalVendor
+  /** The model the CLI reported, for a vendor card. */
+  model?: string
+  /** The card this one hangs under: the Claude subagent that ran a CLI, or the run that started this agent. */
+  parentId?: string
+}
+
+/** A Bash call that runs a frontier CLI, as the pane follows its log. */
+export type ExternalRun = {
+  /** Its card's id: `ext:<tool_use_id>`. */
+  id: string
+  vendor: ExternalVendor
+  cwd: string
+  startedAt: number
+  isBackground: boolean
+  /** When the Bash call returned, for a run in the foreground. */
+  returnedAt?: number
+  returnedOk?: boolean
+  /** The log of its main session, once found. */
+  path?: string
 }
 
 export type SkillStatus = 'active' | 'used' | 'failed'
@@ -86,6 +110,7 @@ declare module 'claude-code' {
       stats: Shaped<UsageStats>
       settings: Shaped<PaneSettings>
       context: number
+      runs: Shaped<ExternalRun[]>
     }
   }
 }

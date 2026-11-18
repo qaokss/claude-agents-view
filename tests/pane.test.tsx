@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { runDir, vendorOf } from '../hooks/external'
+
 const PANE = {
   plugin: 'subagents-pane',
   component: 'Pane',
@@ -464,4 +466,157 @@ test('subagent tokens and the session context show, and settings hide them', asy
   expect(await ui.find({ type: 'Text', text: /tokens/ })).toBeFalsy()
   expect(await ui.find({ type: 'Text', text: /in context/ })).toBeFalsy()
   await ui.unmount()
+})
+
+// ---- Codex and Gemini runs ---------------------------------------------------------
+
+const iso = (ms: number) => new Date(ms).toISOString()
+const bytes = (s: string) => new TextEncoder().encode(s).length
+/** A fake disk: files by path, and the listing each folder gives. */
+type TestOn = Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]
+const disk = (on: TestOn, files: Record<string, string>, mtime: () => number) => {
+  on('fs.list', (_, e) => {
+    const dir = String((e as { path?: string }).path).replace(/\/+$/, '')
+    const names = new Map<string, 'file' | 'dir'>()
+    for (const p of Object.keys(files)) {
+      if (!p.startsWith(`${dir}/`)) continue
+      const rest = p.slice(dir.length + 1).split('/')
+      names.set(rest[0]!, rest.length > 1 ? 'dir' : 'file')
+    }
+    return { value: [...names].map(([name, kind]) => ({
+      name, kind, size: kind === 'file' ? bytes(files[`${dir}/${name}`]!) : 0, mtimeMs: kind === 'file' ? mtime() : 0, isLink: false,
+    })) }
+  })
+  on('fs.read', (_, e) => {
+    const { path, offset = 0 } = e as { path: string; offset?: number }
+    const text = files[path]
+    if (text === undefined) throw new Error('missing')
+    return { value: new TextDecoder().decode(new TextEncoder().encode(text).slice(offset)) }
+  })
+  on('fs.exists', (_, e) => ({ value: String((e as { path?: string }).path) in files }))
+}
+
+test('a Codex run shows as a card with its tokens and its own subagent under it', async ($, on) => {
+  const start = 1_000_000
+  const clock = mock.clock(on, { now: start })
+  const day = (() => { const d = new Date(start); return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}` })()
+  const dir = `/home/u/.codex/sessions/${day}`
+  const line = (o: unknown) => JSON.stringify(o) + '\n'
+  const files: Record<string, string> = {}
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/w/proj' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', (_, e) => ({ value: (e as { name?: string }).name === 'HOME' ? '/home/u' : undefined }))
+  on('fs.write', () => ({ value: undefined }))
+  disk(on, files, () => clock.now())
+  let finish: (() => void) | undefined
+  on('tool.call', async (_, e) => {
+    if ((e as { tool: string }).tool === 'Bash') await new Promise<void>(r => (finish = r))
+    return { result: { stdout: '', stderr: '', interrupted: false } }
+  })
+
+  await $.session.start({ cwd: '/w/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: 'Inventory', status: 'in_progress' }] } as never)
+  const call = $.tool.call({ tool: 'Bash', command: 'cd /w/proj && codex exec "list the training jobs"', description: 'Run the Codex inventory job', run_in_background: false } as never)
+  await clock.advance(10)
+
+  files[`${dir}/rollout-a-main.jsonl`] =
+    line({ timestamp: iso(start + 500), type: 'session_meta', payload: { id: 'main-1', timestamp: iso(start + 500), cwd: '/w/proj', source: 'exec', originator: 'codex_exec', cli_version: '1' } }) +
+    line({ timestamp: iso(start + 600), type: 'turn_context', payload: { model: 'gpt-5.5-codex' } }) +
+    line({ timestamp: iso(start + 700), type: 'event_msg', payload: { type: 'task_started' } }) +
+    line({ timestamp: iso(start + 900), type: 'event_msg', payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: 90_000, cached_input_tokens: 0, output_tokens: 2_400, reasoning_output_tokens: 0, total_tokens: 92_400 },
+      last_token_usage: { input_tokens: 40_000, cached_input_tokens: 0, output_tokens: 900, reasoning_output_tokens: 0, total_tokens: 40_900 },
+      model_context_window: 272_000 } } })
+  files[`${dir}/rollout-b-child.jsonl`] =
+    line({ timestamp: iso(start + 800), type: 'session_meta', payload: { id: 'child-1', timestamp: iso(start + 800), cwd: '/w/proj', parent_thread_id: 'main-1', agent_nickname: 'Ada', agent_role: 'explorer',
+      source: { subagent: { thread_spawn: { parent_thread_id: 'main-1', depth: 1 } } } } }) +
+    line({ timestamp: iso(start + 950), type: 'event_msg', payload: { type: 'token_count', info: {
+      total_token_usage: { input_tokens: 10_000, output_tokens: 500, total_tokens: 10_500 },
+      last_token_usage: { input_tokens: 8_000, output_tokens: 100, total_tokens: 8_100 } } } })
+  await clock.advance(3_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, bodyColumns: 70 } })
+  expect(await ui.find({ type: 'Text', text: /Run the Codex inventory job/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Codex · gpt-5\.5-codex · 42\.4k tokens/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Ada \(explorer\)$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /8\.5k tokens/ })).toBeTruthy()
+  await ui.press({ key: 'btn-view-graph' })
+  const svg = JSON.stringify(await ui.findAll({ type: 'Svg' }))
+  expect(svg).toContain('Inventory')
+  expect(svg).toContain('Run the Codex inventory job')
+  expect(svg).toContain('Ada (explorer)')
+  await ui.unmount()
+
+  finish!()
+  await call
+  await clock.advance(1_000)
+  const done = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await done.find({ type: 'Text', text: /Finished subagents \(1\)/ })).toBeTruthy()
+  await done.unmount()
+})
+
+test('a Gemini run in the background finds its chat by project, and its subagent', async ($, on) => {
+  const start = 2_000_000
+  const clock = mock.clock(on, { now: start })
+  const chats = '/home/u/.gemini/tmp/proj/chats'
+  const line = (o: unknown) => JSON.stringify(o) + '\n'
+  const files: Record<string, string> = { '/home/u/.gemini/tmp/proj/.project_root': '/w/proj\n', '/home/u/.gemini/tmp/other/.project_root': '/elsewhere' }
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.cwd', () => ({ value: '/w/proj' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', (_, e) => ({ value: (e as { name?: string }).name === 'HOME' ? '/home/u' : undefined }))
+  on('fs.write', () => ({ value: undefined }))
+  disk(on, files, () => clock.now())
+  on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'bg1' } }))
+
+  await $.session.start({ cwd: '/w/proj', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'npx -y @google/gemini-cli -p "map the compute docs"', description: 'Run the Gemini inventory job', run_in_background: true } as never)
+  files['/home/u/.gemini/tmp/other/chats/session-x-other.jsonl'] = line({ sessionId: 'nope', startTime: iso(start + 100), kind: 'main' })
+  files[`${chats}/session-y-abcd1234.jsonl`] =
+    line({ sessionId: 'abcd1234-main', projectHash: 'h', startTime: iso(start + 300), lastUpdated: iso(start + 300), kind: 'main' }) +
+    line({ id: 'm1', timestamp: iso(start + 300), type: 'user', content: [{ text: 'map the compute docs' }] }) +
+    line({ id: 'm2', timestamp: iso(start + 400), type: 'gemini', content: '', model: 'gemini-3-pro', toolCalls: [{ id: 'c1', name: 'invoke_agent', status: 'executing' }], tokens: { input: 30_000, output: 1_000, thoughts: 500, cached: 0, tool: 0, total: 31_500 } })
+  files[`${chats}/abcd1234-main/sub-1.jsonl`] =
+    line({ sessionId: 'sub-1', startTime: iso(start + 500), kind: 'subagent' }) +
+    line({ id: 's1', type: 'user', content: 'Read the hardware docs' }) +
+    line({ id: 's2', type: 'gemini', content: 'ok', tokens: { input: 5_000, output: 200, thoughts: 0 } })
+  await clock.advance(3_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Gemini · gemini-3-pro · 31\.5k tokens/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^Read the hardware docs$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /5\.2k tokens/ })).toBeTruthy()
+  await ui.unmount()
+
+  // the model answers, and the chat goes quiet: the run is done
+  files[`${chats}/session-y-abcd1234.jsonl`] += line({ id: 'm3', type: 'gemini', content: 'Done.', tokens: { input: 36_000, output: 800, thoughts: 0 } })
+  await clock.advance(3_000)
+  await clock.advance(25_000)
+  const done = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await done.find({ type: 'Text', text: /Finished subagents \(1\)/ })).toBeTruthy()
+  await done.press({ key: 'btn-done:' })
+  expect(await done.find({ type: 'Text', text: /38\.3k tokens/ })).toBeTruthy()
+  await done.unmount()
+})
+
+test('only commands that run Codex or Gemini count as runs', async () => {
+  expect(vendorOf('codex exec "x"')).toBe('codex')
+  expect(vendorOf('cd a && npx @openai/codex@latest exec x')).toBe('codex')
+  expect(vendorOf('gemini -p "x" --output-format json')).toBe('gemini')
+  expect(vendorOf('npx -y @google/gemini-cli -p hi')).toBe('gemini')
+  expect(vendorOf('codex --version')).toBeUndefined()
+  expect(vendorOf('which gemini')).toBeUndefined()
+  expect(vendorOf('grep -r codex src')).toBeUndefined()
+  expect(vendorOf('ls ~/.codex/sessions')).toBeUndefined()
+  expect(vendorOf('echo hi | codex exec -')).toBe('codex')
+  expect(vendorOf('OPENAI_API_KEY=x timeout 600 codex exec y')).toBe('codex')
+  expect(runDir('codex exec x', '/w/a', '/h')).toBe('/w/a')
+  expect(runDir('cd ../b && codex exec x', '/w/a', '/h')).toBe('/w/b')
+  expect(runDir('cd ~/proj && gemini -p x', '/w/a', '/h')).toBe('/h/proj')
+  expect(runDir('codex exec -C /srv/app "x"', '/w/a', '/h')).toBe('/srv/app')
 })

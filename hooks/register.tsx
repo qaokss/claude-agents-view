@@ -4,6 +4,7 @@ import type { Register, EngineInterface } from 'claude-code'
 import type {
   AgentStatusWord,
   ArchivedPlan,
+  ExternalRun,
   FoldState,
   PaneSettings,
   PlanStep,
@@ -16,6 +17,7 @@ import type {
 import { assignAgents, bodyPicture, groupDigits, headerPicture, planPicture, rankingPicture, shortSkill } from './graph'
 import type { Picture, Show } from './graph'
 import { WORDS } from './i18n'
+import { VENDOR_NAME, isFollowed, pollRuns, runDir, vendorOf } from './external'
 
 const w = WORDS
 
@@ -62,6 +64,9 @@ const settings = atom({ plugin: 'subagents-pane', key: 'settings' } as const, DE
 })
 // Tokens in this session's context window after its last response.
 const context = atom({ plugin: 'subagents-pane', key: 'context' } as const, 0)
+// Codex and Gemini runs Claude started through Bash, followed by their logs.
+const runs = atom({ plugin: 'subagents-pane', key: 'runs' } as const, [], { shape: 'runs-1' })
+const RUNS_MAX = 30
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
@@ -298,7 +303,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     topic: me.topic,
     plan: await read($, plan),
     history: (await read($, history)).slice(-10),
-    agents: (await read($, agents)).slice(-20),
+    agents: (await read($, agents)).slice(-40),
     skills: (await read($, skills)).slice(-30),
     updatedAt: t,
     ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
@@ -390,9 +395,56 @@ const readContext = async ($: EngineInterface) => {
   if (tokens !== (await read($, context))) await update($, context, () => tokens)
 }
 
+// Reads the logs of the Codex and Gemini runs still followed, every few
+// seconds, and writes their cards (and their own agents' cards) into the list.
+const RUNS_EVERY_MS = 3_000
+let lastRunsRead = 0
+const lastCards = new Map<string, TrackedAgent[]>()
+const followRuns = async ($: EngineInterface, t: number) => {
+  if (t - lastRunsRead < RUNS_EVERY_MS) return
+  lastRunsRead = t
+  const all = await read($, runs)
+  const followed = all.filter(r => isFollowed(r, lastCards.get(r.id), t)).map(r => ({ ...r }))
+  if (followed.length === 0) return
+  const cards = await pollRuns($, followed, t)
+  for (const [id, list] of cards) lastCards.set(id, list)
+  const paths = new Map(followed.filter(r => r.path).map(r => [r.id, r.path!]))
+  if (all.some(r => paths.has(r.id) && r.path !== paths.get(r.id))) {
+    await update($, runs, list => list.map(r => (paths.has(r.id) ? { ...r, path: paths.get(r.id) } : r)))
+  }
+  const typeOf = (c: TrackedAgent) => (c.vendor ? `${VENDOR_NAME[c.vendor]}${c.model ? ` · ${c.model}` : ''}` : c.type)
+  await update($, agents, list => {
+    const byId = new Map(list.map(a => [a.id, a]))
+    let changed = false
+    for (const group of cards.values()) {
+      for (const c of group) {
+        const known = byId.get(c.id)
+        // the run's own card keeps what the Bash call gave it
+        const next: TrackedAgent = known
+          ? {
+              ...known,
+              status: c.status,
+              endedAt: c.endedAt,
+              ...(c.tokens ? { tokens: c.tokens } : {}),
+              ...(c.model ? { model: c.model } : {}),
+              ...(c.description && !known.description ? { description: c.description } : {}),
+            }
+          : { ...c, description: c.description || '' }
+        next.type = typeOf(next)
+        if (JSON.stringify(next) !== JSON.stringify(known)) {
+          byId.set(c.id, next)
+          changed = true
+        }
+      }
+    }
+    return changed ? [...byId.values()].slice(-100) : list
+  })
+}
+
 const tick = async ($: EngineInterface) => {
   await sync($).catch(() => {})
   await readContext($).catch(() => {})
+  await followRuns($, await $.clock.now()).catch(() => {})
   const t = await $.clock.now()
   await refreshTitle($, t).catch(() => {})
   await publish($, t).catch(() => {})
@@ -551,6 +603,64 @@ export const register: Register = on => {
       } catch {
         // best-effort
       }
+    }
+    return ran
+  })
+
+  // A Bash call that runs Codex or Gemini gets a card at once; its log fills it in.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const vendor = vendorOf(e.command)
+    if (!vendor) return next(e)
+    const id = `ext:${e.tool_use_id}`
+    try {
+      const t = await $.clock.now()
+      const by = e.agentId
+      const step = by
+        ? (await read($, agents)).find(a => a.id === by)?.step
+        : (await read($, plan)).find(st => st.status === 'in_progress')?.content
+      const run: ExternalRun = {
+        id,
+        vendor,
+        cwd: runDir(e.command, await $.session.cwd(), (await $.env.get('HOME')) ?? ''),
+        startedAt: t,
+        isBackground: e.run_in_background === true,
+      }
+      const card: TrackedAgent = {
+        id,
+        description: oneLine(e.description || e.command, 120),
+        type: VENDOR_NAME[vendor],
+        prompt: oneLine(e.command, 300),
+        status: 'running',
+        startedAt: t,
+        toolCalls: 0,
+        vendor,
+        ...(step ? { step } : {}),
+        ...(by ? { parentId: by } : {}),
+      }
+      await update($, runs, list => [...list.filter(r => r.id !== id), run].slice(-RUNS_MAX))
+      await update($, agents, list => [...list.filter(a => a.id !== id), card].slice(-100))
+      await update($, now, () => t)
+    } catch {
+      // the pane misses this run; the command itself goes on
+    }
+    const ran = await next(e)
+    try {
+      const result = ('result' in ran ? ran.result : undefined) as
+        | { backgroundTaskId?: string; interrupted?: boolean }
+        | undefined
+      const denied = 'deny' in ran && !!ran.deny
+      if (result?.backgroundTaskId && !denied) {
+        await update($, runs, list => list.map(r => (r.id === id ? { ...r, isBackground: true } : r)))
+      } else {
+        const t = await $.clock.now()
+        const ok = !denied && !result?.interrupted
+        await update($, runs, list => list.map(r => (r.id === id ? { ...r, returnedAt: t, returnedOk: ok } : r)))
+        await patch($, id, a => ({ ...a, status: ok ? 'completed' : 'failed', endedAt: t }))
+        // one last read of its log, for the final token count
+        lastRunsRead = 0
+      }
+    } catch {
+      // best-effort
     }
     return ran
   })
@@ -842,7 +952,7 @@ export const register: Register = on => {
       return { done, total: list.length, isAllDone: list.length > 0 && done === list.length }
     }
 
-    const agentRow = (a: TrackedAgent) => (
+    const agentRow = (a: TrackedAgent, depth = 0): unknown => (
       <Box key={a.id} flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" gap={1}>
           <Box flexDirection="row" flexShrink={1}>
@@ -857,7 +967,7 @@ export const register: Register = on => {
         </Box>
         <Box paddingLeft={2}>
           <Text size="caption" color="subtle" wrap="truncate-end">
-            {[a.type, w.calls(a.toolCalls), tokensOf(a.tokens), isLive(a) && a.lastTool ? a.lastTool : '']
+            {[a.type, a.vendor ? '' : w.calls(a.toolCalls), tokensOf(a.tokens), isLive(a) && a.lastTool ? a.lastTool : '']
               .filter(Boolean)
               .join(' · ')}
           </Text>
@@ -872,12 +982,27 @@ export const register: Register = on => {
             ))}
           </Box>
         )}
+        {depth < 3 && (childrenOf.get(a.id) ?? []).length > 0 && (
+          <Box paddingLeft={2} flexDirection="column">
+            {(childrenOf.get(a.id) ?? []).map(c => agentRow(c, depth + 1) as never)}
+          </Box>
+        )}
       </Box>
     )
     let agentSkillsOf = new Map<string, TrackedSkill[]>()
+    let childrenOf = new Map<string, TrackedAgent[]>()
     const withSkillsOf = (snap: SessionSnapshot) => {
       agentSkillsOf = new Map()
       for (const k of snap.skills ?? []) if (k.by) agentSkillsOf.set(k.by, [...(agentSkillsOf.get(k.by) ?? []), k])
+      childrenOf = new Map()
+      const ids = new Set(snap.agents.map(a => a.id))
+      for (const a of snap.agents) {
+        if (a.parentId && ids.has(a.parentId)) childrenOf.set(a.parentId, [...(childrenOf.get(a.parentId) ?? []), a])
+      }
+    }
+    const topLevel = (snap: SessionSnapshot) => {
+      const ids = new Set(snap.agents.map(a => a.id))
+      return snap.agents.filter(a => !a.parentId || !ids.has(a.parentId))
     }
 
     // The main conversation's skills: active and failed ones listed, used ones folded.
@@ -917,8 +1042,8 @@ export const register: Register = on => {
     const agentsPart = (snap: SessionSnapshot, withLabel: boolean) => {
       if (!show.agents) return null
       withSkillsOf(snap)
-      const live = snap.agents.filter(isLive).reverse()
-      const done = snap.agents.filter(a => !isLive(a)).reverse()
+      const live = topLevel(snap).filter(isLive).reverse()
+      const done = topLevel(snap).filter(a => !isLive(a)).reverse()
       const doneKey = `done:${snap.sessionId}`
       const doneOpen = isOpen(f, doneKey, false)
       if (live.length === 0 && done.length === 0) return null
@@ -927,13 +1052,13 @@ export const register: Register = on => {
           {withLabel && live.length > 0 && sectionLabel(w.subagentsCount(live.length))}
           {live.length > 0 && (
             <Box flexDirection="column" paddingLeft={withLabel ? 2 : 0}>
-              {live.map(agentRow)}
+              {live.map(a => agentRow(a) as never)}
             </Box>
           )}
           {done.length > 0 && foldRow(doneKey, doneOpen, w.finishedSubagents(done.length))}
           {doneOpen && (
             <Box flexDirection="column" paddingLeft={2}>
-              {done.slice(0, 10).map(agentRow)}
+              {done.slice(0, 10).map(a => agentRow(a) as never)}
             </Box>
           )}
         </Box>
