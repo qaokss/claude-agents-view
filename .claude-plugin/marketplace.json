@@ -1,6 +1,11 @@
 {
   "name": "claude-agents-view",
-  "owner": { "name": "qaokss" },
+  "owner": {
+    "name": "qaokss"
+  },
+  "metadata": {
+    "description": "A live pane for Claude Code: agents, skills and plans across all sessions"
+  },
   "plugins": [
     {
       "name": "subagents-pane",

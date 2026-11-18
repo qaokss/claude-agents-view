@@ -86,3 +86,7 @@ claude plugin test .
 Tests live in `tests/pane.test.tsx` and run the module against the engine with mocked clock, files and processes.
 
 Built and tested with Claude Code 2.1.321–2.1.325. The hooks-module API is in early access and may change between releases.
+
+## License
+
+[MIT](LICENSE)
