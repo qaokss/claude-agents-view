@@ -620,3 +620,34 @@ test('only commands that run Codex or Gemini count as runs', async () => {
   expect(runDir('cd ~/proj && gemini -p x', '/w/a', '/h')).toBe('/h/proj')
   expect(runDir('codex exec -C /srv/app "x"', '/w/a', '/h')).toBe('/srv/app')
 })
+
+test('in the graph, finished subagents with no step fold away at the next message or plan', async ($, on) => {
+  const clock = mock.clock(on, { now: 3_000_000 })
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'f1' }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  on('prompt.submit', (_, e) => e)
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'x', description: 'Read the docs page', subagentType: 'web-fetch' } as never)
+  await $.turn.complete({ turnId: 't1', agentId: 'f1', reason: 'answer', answer: 'done' } as never)
+  await clock.advance(1_000)
+
+  const svgOf = async (ui: { findAll: (q: { type: 'Svg' }) => Promise<unknown> }) => JSON.stringify(await ui.findAll({ type: 'Svg' }))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'btn-view-graph' })
+  // finished in this turn: still shown
+  expect(await svgOf(ui)).toContain('Read the docs page')
+  expect(await ui.find({ type: 'Text', text: /Finished subagents/ })).toBeFalsy()
+  await ui.unmount()
+
+  await $.prompt.submit({ text: 'next thing' } as never)
+  await clock.advance(1_000)
+  const later = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await svgOf(later)).not.toContain('Read the docs page')
+  expect(await later.find({ type: 'Text', text: /Finished subagents \(1\)/ })).toBeTruthy()
+  await later.unmount()
+})

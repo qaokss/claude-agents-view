@@ -76,6 +76,8 @@ export type SessionSnapshot = {
   isEnded?: boolean
   /** Tokens in the main conversation's context window, after its last response. */
   contextTokens?: number
+  /** When the latest user message or plan began; finished agents from before it fold away in the graph. */
+  turnAt?: number
 }
 
 export type SelfInfo = {
@@ -111,6 +113,7 @@ declare module 'claude-code' {
       settings: Shaped<PaneSettings>
       context: number
       runs: Shaped<ExternalRun[]>
+      turnAt: number
     }
   }
 }

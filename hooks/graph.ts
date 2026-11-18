@@ -341,6 +341,18 @@ const childrenMap = (snap: SessionSnapshot) => {
   return map
 }
 
+/**
+ * Agents that ran under no plan step: the live ones and those that finished
+ * since the latest user message or plan stay above the plan; older finished
+ * ones fold away.
+ */
+export const splitLoose = (snap: SessionSnapshot) => {
+  const loose = assignAgents(snap).loose
+  const since = snap.turnAt ?? 0
+  const isFresh = (a: TrackedAgent) => isLive(a) || (a.endedAt ?? a.startedAt) >= since
+  return { fresh: loose.filter(isFresh), earlier: loose.filter(a => !isFresh(a)) }
+}
+
 export const assignAgents = (snap: SessionSnapshot) =>
   byPlan(snap, topAgents(snap), a => a.step, a => a.startedAt)
 
@@ -552,7 +564,7 @@ export const bodyPicture = (
     y = drawTimeline(parts, topAgents(snap), allSkills, y, 0, ctx)
   } else {
     // what ran with no plan hangs off the frame, above the plan
-    const looseAgents = show.agents ? trim(ag.loose) : []
+    const looseAgents = show.agents ? trim(splitLoose(snap).fresh) : []
     const ax = PAD + Math.round((W - 2 * PAD) * 0.46) + 22
     for (const a of looseAgents) {
       parts.push(edge(TRUNK, 0, ax, y + AGENT_H / 2, isLive(a)))
@@ -568,6 +580,25 @@ export const bodyPicture = (
   const isEmpty = parts.length === 0
   const H = isEmpty ? 0 : Math.max(20, Math.round(y + 2))
   return picture(W, H, parts, isEmpty)
+}
+
+/** Finished agents that ran under no plan step before the latest message or plan. */
+export const earlierPicture = (
+  snap: SessionSnapshot,
+  now: number,
+  width: number,
+  w: Words = WORDS,
+  tokens = true,
+): Picture => {
+  const W = Math.max(300, Math.round(width))
+  const ctx: Ctx = { W, now, show: SHOW_ALL, agentSkills: skillsOfAgent(snap), w, tokens, children: childrenMap(snap) }
+  const parts: string[] = []
+  const ax = PAD + 6
+  let y = PAD
+  for (const a of [...splitLoose(snap).earlier].reverse().slice(0, 10)) {
+    y += agentStack(parts, a, ax, y, W - PAD - ax, ctx) + AGENT_GAP
+  }
+  return picture(W, Math.max(20, Math.round(y + PAD - AGENT_GAP)), parts, parts.length === 0)
 }
 
 /** One finished plan with the agents and skills that ran under it. */

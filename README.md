@@ -62,7 +62,7 @@ The pane opens by itself when a session starts. If you close it, bring it back w
 | `● Plans ● Agents ● Skills` | under it | Shows or hides each kind, for all sessions at once. |
 | `▸` / `▾` | left of a session | Folds what hangs off a session; its name stays. |
 | `collapse all` | above other sessions | Folds or unfolds every other session. |
-| `▸ Past plans`, `▸ Finished subagents`, `▸ Used skills` | inside a session | Earlier work, folded by default. |
+| `▸ Past plans`, `▸ Finished subagents`, `▸ Used skills` | inside a session | Earlier work, folded by default. In the graph, subagents that ran outside a plan step fold under `▸ Finished subagents` once you send the next message or a new plan starts. |
 | `Statistics ▴` | bottom right | Opens the all-time ranking of skills and subagent types. |
 
 Folds, the chosen view, filters and settings are remembered per session.

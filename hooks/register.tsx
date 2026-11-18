@@ -14,7 +14,7 @@ import type {
   TrackedSkill,
   UsageStats,
 } from '../types'
-import { assignAgents, bodyPicture, groupDigits, headerPicture, planPicture, rankingPicture, shortSkill } from './graph'
+import { assignAgents, bodyPicture, earlierPicture, groupDigits, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill } from './graph'
 import type { Picture, Show } from './graph'
 import { WORDS } from './i18n'
 import { VENDOR_NAME, isFollowed, pollRuns, runDir, vendorOf } from './external'
@@ -67,6 +67,8 @@ const context = atom({ plugin: 'subagents-pane', key: 'context' } as const, 0)
 // Codex and Gemini runs Claude started through Bash, followed by their logs.
 const runs = atom({ plugin: 'subagents-pane', key: 'runs' } as const, [], { shape: 'runs-1' })
 const RUNS_MAX = 30
+// When the user last sent a message, or a new plan replaced the old one.
+const turnAt = atom({ plugin: 'subagents-pane', key: 'turnAt' } as const, 0)
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
@@ -307,6 +309,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     skills: (await read($, skills)).slice(-30),
     updatedAt: t,
     ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
+    ...((await read($, turnAt)) > 0 ? { turnAt: await read($, turnAt) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
   }
 }
@@ -487,6 +490,12 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    try {
+      const t = await $.clock.now()
+      await update($, turnAt, () => t)
+    } catch {
+      // folding is cosmetic
+    }
     try {
       const me = await read($, self)
       if (!me.topic && e.text.trim()) {
@@ -676,6 +685,9 @@ export const register: Register = on => {
             const archived: ArchivedPlan = { steps: old, endedAt: await $.clock.now() }
             await update($, history, list => [...list, archived].slice(-HISTORY_MAX))
           }
+          // a new list is a new plan: what finished before it folds away
+          const t = await $.clock.now()
+          await update($, turnAt, () => t)
         }
         await update($, plan, steps =>
           e.tool === WRAP_TOOL
@@ -1184,6 +1196,9 @@ export const register: Register = on => {
         const hKey = `history:${snap.sessionId}`
         const hOpen = isOpen(f, hKey, false)
         const pastAgents = past.reduce((n, list) => n + list.length, 0)
+        const earlier = show.agents ? splitLoose(snap).earlier : []
+        const eKey = `earlier:${snap.sessionId}`
+        const eOpen = isOpen(f, eKey, false)
         return (
           <Box key={`gs-${snap.sessionId}`} flexDirection="column">
             {isOwn && (
@@ -1212,6 +1227,14 @@ export const register: Register = on => {
                     body,
                     w.sessionAlt(nameOf(snap), snap.plan.length, snap.agents.length),
                     `body-${snap.sessionId}`,
+                  )}
+                {earlier.length > 0 && foldRow(eKey, eOpen, w.finishedSubagents(earlier.length))}
+                {eOpen &&
+                  earlier.length > 0 &&
+                  picture(
+                    earlierPicture(snap, t, px - 18, w, prefs.tokens),
+                    w.finishedSubagents(earlier.length),
+                    `earlier-${snap.sessionId}`,
                   )}
                 {history.length > 0 &&
                   foldRow(
