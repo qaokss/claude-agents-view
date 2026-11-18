@@ -161,6 +161,10 @@ const agentNode = (
   withTokens = true,
 ) => {
   const tok = withTokens && a.tokens ? a.tokens : 0
+  // tokens stand at the right of the second line, so a narrow card cuts its kind, not them
+  const tokLabel = tok ? wd.tokens(tok) : ''
+  const tokW = tok ? Math.round(tokLabel.length * 5.6 + 8) : 0
+  // a Codex or Gemini card names its vendor and model in a chip, the line its time alone
   const cls = STATUS_CLASS[a.status]
   const running = a.status === 'running'
   const time = clockTime((a.endedAt ?? Math.max(now, a.startedAt)) - a.startedAt)
@@ -209,10 +213,10 @@ const agentNode = (
   }
   if (chipsIn.length === 0 && a.vendor) {
     // a Codex or Gemini card: its CLI's tools are not counted, so its vendor instead
-    const label = a.vendor === 'codex' ? 'Codex' : 'Gemini'
+    const label = cut(`${a.vendor === 'codex' ? 'Codex' : 'Gemini'}${a.model ? ` · ${a.model}` : ''}`, Math.floor((w - 40) / 5.6))
     const cw = Math.round(label.length * 5.6 + 12)
     chips.push(`<rect x="${x + 26}" y="${y + 39}" width="${cw}" height="15" rx="7.5" class="chip vendor ${a.vendor}"/>
-      <text x="${x + 26 + cw / 2}" y="${y + 50}" class="chiptext mid">${label}</text>`)
+      <text x="${x + 26 + cw / 2}" y="${y + 50}" class="chiptext mid">${esc(label)}</text>`)
   } else if (chipsIn.length === 0) {
     chips.push(`<text x="${x + 26}" y="${y + 50}" class="tiny">${esc(wd.noTools)}</text>`)
   }
@@ -235,7 +239,8 @@ const agentNode = (
         : `<text x="${x + 8}" y="${y + 20}" class="glyph ${cls}">${STATUS_GLYPH[a.status]}</text>`
     }
     <text x="${x + 26}" y="${y + 19}" class="label strong">${esc(cut(a.description || wd.noDescription, textChars))}</text>
-    <text x="${x + 26}" y="${y + 33}" class="tiny">${esc(cut(`${a.type} · ${time}${tok ? ` · ${wd.tokens(tok)}` : ''}`, Math.floor((w - 34) / 5.6)))}</text>
+    <text x="${x + 26}" y="${y + 33}" class="tiny">${esc(cut(a.vendor ? time : `${a.type} · ${time}`, Math.floor((w - 34 - tokW) / 5.6)))}</text>
+    ${tok ? `<text x="${x + w - 10}" y="${y + 33}" class="tiny end">${esc(tokLabel)}</text>` : ''}
     ${chips.join('\n')}
   </g>`
 }
