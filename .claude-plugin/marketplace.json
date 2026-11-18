@@ -1,0 +1,11 @@
+{
+  "name": "claude-agents-view",
+  "owner": { "name": "qaokss" },
+  "plugins": [
+    {
+      "name": "subagents-pane",
+      "source": "./",
+      "description": "See what your agents, skills and plans are doing: a live pane with a list and a graph across all Claude Code sessions"
+    }
+  ]
+}
