@@ -5,6 +5,7 @@ import type {
   AgentStatusWord,
   ArchivedPlan,
   FoldState,
+  PaneSettings,
   PlanStep,
   SelfInfo,
   SessionSnapshot,
@@ -55,6 +56,12 @@ const shownAtom = atom(
 const EMPTY_STATS: UsageStats = { skills: {}, agents: {}, sessions: 0 }
 const stats = atom({ plugin: 'subagents-pane', key: 'stats' } as const, EMPTY_STATS, { shape: 'stats-2' })
 const view = atom({ plugin: 'subagents-pane', key: 'view' } as const, 'list' as 'list' | 'graph')
+const DEFAULT_SETTINGS: PaneSettings = { tokens: true }
+const settings = atom({ plugin: 'subagents-pane', key: 'settings' } as const, DEFAULT_SETTINGS, {
+  shape: 'settings-1',
+})
+// Tokens in this session's context window after its last response.
+const context = atom({ plugin: 'subagents-pane', key: 'context' } as const, 0)
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
@@ -220,16 +227,22 @@ const sync = async ($: EngineInterface) => {
         status: info.status,
         startedAt: t,
         toolCalls: 0,
+        ...(info.tokenCount > 0 ? { tokens: info.tokenCount } : {}),
       })
       changed = true
-    } else if (known.status !== info.status) {
-      const ended = !LIVE.includes(info.status)
-      byId.set(info.id, {
-        ...known,
-        status: info.status,
-        endedAt: ended ? (known.endedAt ?? t) : undefined,
-      })
-      changed = true
+    } else {
+      let next = known
+      if (known.status !== info.status) {
+        const ended = !LIVE.includes(info.status)
+        next = { ...next, status: info.status, endedAt: ended ? (known.endedAt ?? t) : undefined }
+      }
+      // The engine reads an agent's tokens every few seconds; a finished one
+      // keeps its last count after its row is gone.
+      if (info.tokenCount > 0 && info.tokenCount !== known.tokens) next = { ...next, tokens: info.tokenCount }
+      if (next !== known) {
+        byId.set(info.id, next)
+        changed = true
+      }
     }
   }
   if (changed) await update($, agents, () => [...byId.values()].slice(-100))
@@ -288,6 +301,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     agents: (await read($, agents)).slice(-20),
     skills: (await read($, skills)).slice(-30),
     updatedAt: t,
+    ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
   }
 }
@@ -370,8 +384,15 @@ const gather = async ($: EngineInterface, t: number) => {
   if (JSON.stringify(before) !== JSON.stringify(found)) await update($, others, () => found)
 }
 
+// The main conversation's context, as the status line counts it.
+const readContext = async ($: EngineInterface) => {
+  const tokens = (await $.session.usage()).context.tokens ?? 0
+  if (tokens !== (await read($, context))) await update($, context, () => tokens)
+}
+
 const tick = async ($: EngineInterface) => {
   await sync($).catch(() => {})
+  await readContext($).catch(() => {})
   const t = await $.clock.now()
   await refreshTitle($, t).catch(() => {})
   await publish($, t).catch(() => {})
@@ -587,6 +608,8 @@ export const register: Register = on => {
     const mode = await read($, view)
     const show: Show = await read($, shownAtom)
     const usage = await read($, stats)
+    const prefs = await read($, settings)
+    const tokensOf = (n?: number) => (prefs.tokens && n ? w.tokens(n) : '')
     // The graph is an SVG, which the desktop and mobile apps draw; elsewhere, the list.
     const canGraph = e.surface === 'desktop' || e.surface === 'mobile'
     // The view toggle: one segmented control, the shown view filled with a
@@ -609,6 +632,25 @@ export const register: Register = on => {
         </Box>
       )
     }
+    const settingsOpen = isOpen(f, 'settings', false)
+    const settingsCard = settingsOpen ? (
+      <Box key="settings-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+        <Text size="caption" color="subtle">
+          {w.settings}
+        </Text>
+        <Button
+          key="btn-set-tokens"
+          plain
+          dimColor={!prefs.tokens}
+          hover={{ color: 'text' }}
+          onPress={() => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens }))}
+        >
+          <Text size="footnote">
+            {prefs.tokens ? '●' : '○'} {w.showTokens}
+          </Text>
+        </Button>
+      </Box>
+    ) : null
     const sessionCount = 1 + rest.length
     const liveAll =
       mine.agents.filter(isLive).length + rest.reduce((n, s) => n + s.agents.filter(isLive).length, 0)
@@ -619,6 +661,17 @@ export const register: Register = on => {
           {liveAll > 0 && <Text color="claude"> · ◐ {liveAll}</Text>}
         </Text>
         <Box flexDirection="row" gap={1} alignItems="center">
+          <Box key="settings-button">
+            <Button
+              key="btn-settings"
+              plain
+              dimColor={!settingsOpen}
+              hover={{ color: 'text' }}
+              onPress={() => void update($, fold, cur => setOpen(cur, 'settings', !settingsOpen))}
+            >
+              <Text size="footnote">⚙</Text>
+            </Button>
+          </Box>
           {canGraph && (
             <Box flexDirection="row" borderStyle="round" borderColor="promptBorder">
               {segment('list', w.list)}
@@ -804,7 +857,7 @@ export const register: Register = on => {
         </Box>
         <Box paddingLeft={2}>
           <Text size="caption" color="subtle" wrap="truncate-end">
-            {[a.type, w.calls(a.toolCalls), isLive(a) && a.lastTool ? a.lastTool : '']
+            {[a.type, w.calls(a.toolCalls), tokensOf(a.tokens), isLive(a) && a.lastTool ? a.lastTool : '']
               .filter(Boolean)
               .join(' · ')}
           </Text>
@@ -937,11 +990,18 @@ export const register: Register = on => {
                 {nameOf(snap)}
               </Text>
             </Box>
-            {show.plans && total > 0 && (
-              <Text size="caption" color={isAllDone ? 'success' : 'subtle'}>
-                {done}/{total}
-              </Text>
-            )}
+            <Box flexDirection="row" gap={1} flexShrink={0}>
+              {prefs.tokens && !!snap.contextTokens && (
+                <Text size="caption" color="subtle">
+                  {w.inContext(snap.contextTokens)}
+                </Text>
+              )}
+              {show.plans && total > 0 && (
+                <Text size="caption" color={isAllDone ? 'success' : 'subtle'}>
+                  {done}/{total}
+                </Text>
+              )}
+            </Box>
           </Box>
           {!open && ((show.plans && stepNow) || live > 0) && (
             <Box flexDirection="column" paddingLeft={2}>
@@ -995,7 +1055,7 @@ export const register: Register = on => {
         const liveHere = snap.agents.filter(isLive).length
         const past = assignAgents(snap).past
         const history = show.plans ? snap.history ?? [] : []
-        const body = bodyPicture(snap, t, px, show, w)
+        const body = bodyPicture(snap, t, px, show, w, prefs.tokens)
         const hKey = `history:${snap.sessionId}`
         const hOpen = isOpen(f, hKey, false)
         const pastAgents = past.reduce((n, list) => n + list.length, 0)
@@ -1015,7 +1075,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {picture(
-                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w),
+                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined),
                 nameOf(snap),
                 `head-${snap.sessionId}`,
               )}
@@ -1047,7 +1107,7 @@ export const register: Register = on => {
                           {foldRow(pKey, pOpen, pastLabel(past1.steps))}
                           {pOpen &&
                             picture(
-                              planPicture(snap, n, t, px - 18, show, w),
+                              planPicture(snap, n, t, px - 18, show, w, prefs.tokens),
                               w.pastPlanAlt(past1.steps.length),
                               `${snap.sessionId}-${past1.endedAt}`,
                             )}
@@ -1062,6 +1122,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column" gap={1} minHeight={fullHeight}>
           {switchRow}
+          {settingsCard}
           {filterRow}
           {sessionGraph(mine, true)}
           {othersHeading}
@@ -1100,7 +1161,9 @@ export const register: Register = on => {
             {nameOf(mine)}
           </Text>
           <Text size="caption" color="subtle">
-            {w.thisSession}
+            {[prefs.tokens && mine.contextTokens ? w.inContext(mine.contextTokens) : '', w.thisSession]
+              .filter(Boolean)
+              .join(' · ')}
           </Text>
         </Box>
         {ownParts.length === 0 ? (
@@ -1139,6 +1202,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1} minHeight={fullHeight}>
         {switchRow}
+        {settingsCard}
         {filterRow}
         {ownBlock}
         {othersHeading}

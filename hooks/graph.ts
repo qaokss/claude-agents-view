@@ -158,7 +158,9 @@ const agentNode = (
   now: number,
   agentSkills: TrackedSkill[],
   wd: Words,
+  withTokens = true,
 ) => {
+  const tok = withTokens && a.tokens ? a.tokens : 0
   const cls = STATUS_CLASS[a.status]
   const running = a.status === 'running'
   const time = clockTime((a.endedAt ?? Math.max(now, a.startedAt)) - a.startedAt)
@@ -211,7 +213,7 @@ const agentNode = (
 
   const tip = [
     a.description || wd.noDescription,
-    `${a.type} · ${wd.agentStatus[a.status]} · ${time}`,
+    `${a.type} · ${wd.agentStatus[a.status]} · ${time}${tok ? ` · ${wd.tokens(tok)}` : ''}`,
     wd.toolCalls(a.toolCalls),
     ...counts.map(([n, c]) => `  ${n}: ${c}`),
     ...agentSkills.map(k => `  ${wd.skillWord} ${skillTip(k, wd)}`),
@@ -227,7 +229,7 @@ const agentNode = (
         : `<text x="${x + 8}" y="${y + 20}" class="glyph ${cls}">${STATUS_GLYPH[a.status]}</text>`
     }
     <text x="${x + 26}" y="${y + 19}" class="label strong">${esc(cut(a.description || wd.noDescription, textChars))}</text>
-    <text x="${x + 26}" y="${y + 33}" class="tiny">${esc(cut(`${a.type} · ${time}`, Math.floor((w - 34) / 5.6)))}</text>
+    <text x="${x + 26}" y="${y + 33}" class="tiny">${esc(cut(`${a.type} · ${time}${tok ? ` · ${wd.tokens(tok)}` : ''}`, Math.floor((w - 34) / 5.6)))}</text>
     ${chips.join('\n')}
   </g>`
 }
@@ -334,7 +336,7 @@ const trim = (agents: TrackedAgent[]) => {
   return agents.filter(a => isLive(a) || done.includes(a))
 }
 
-type Ctx = { W: number; now: number; show: Show; agentSkills: Map<string, TrackedSkill[]>; w: Words }
+type Ctx = { W: number; now: number; show: Show; agentSkills: Map<string, TrackedSkill[]>; w: Words; tokens: boolean }
 
 // A plan as a trunk of steps from `top`: each step's skills as pills under its
 // text, its agents as cards to the right.
@@ -386,7 +388,7 @@ const drawPlan = (
     mine.forEach((a, i) => {
       const ay = y + i * (AGENT_H + AGENT_GAP)
       parts.push(edge(PAD + leftW + 4, cy, ax, ay + AGENT_H / 2, isLive(a)))
-      parts.push(agentNode(a, ax, ay, aw, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w))
+      parts.push(agentNode(a, ax, ay, aw, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w, ctx.tokens))
     })
     bottom = cy
     y += rowH + 10
@@ -420,7 +422,7 @@ const drawTimeline = (
     if (it.agent) {
       const cy = y + AGENT_H / 2
       parts.push(edge(TRUNK, cy, ax, cy, isLive(it.agent)))
-      parts.push(agentNode(it.agent, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(it.agent.id) ?? [] : [], ctx.w))
+      parts.push(agentNode(it.agent, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(it.agent.id) ?? [] : [], ctx.w, ctx.tokens))
       bottom = cy
       y += TIMELINE_ROW
       i++
@@ -452,13 +454,17 @@ export const headerPicture = (
   width: number,
   show: Show = SHOW_ALL,
   w: Words = WORDS,
+  contextTokens?: number,
 ): Picture => {
   const W = Math.max(200, Math.round(width))
   const FRAME_H = 38
   const H = isOpen ? 48 : 40
   const done = plan.filter(s => s.status === 'completed').length
   const count = show.plans && plan.length > 0 ? `${done}/${plan.length}` : ''
-  const nameChars = Math.floor((W - 28 - (count ? count.length * 8 + 14 : 0)) / 8.2)
+  const ctxLabel = contextTokens ? w.inContext(contextTokens) : ''
+  const ctxX = W - 14 - (count ? count.length * 8 + 12 : 0)
+  const rightW = (count ? count.length * 8 + 14 : 0) + (ctxLabel ? ctxLabel.length * 6.2 + 12 : 0)
+  const nameChars = Math.floor((W - 28 - rightW) / 8.2)
   const parts = [
     `<title>${esc(`${name}${isOwn ? w.thisSessionTip : ''}${liveCount ? `\n${w.runningTip(liveCount)}` : ''}`)}</title>`,
     `<rect x="1" y="1" width="${W - 2}" height="${FRAME_H}" rx="10" class="frame ${isOwn ? 'own' : ''}"/>`,
@@ -467,6 +473,7 @@ export const headerPicture = (
       : '',
     `<text x="14" y="25" class="head">${esc(cut(name, nameChars))}</text>`,
     count ? `<text x="${W - 14}" y="25" class="count end ${done === plan.length ? 'okfill' : ''}">${count}</text>` : '',
+    ctxLabel ? `<text x="${ctxX}" y="24" class="tiny end">${esc(ctxLabel)}</text>` : '',
     isOpen ? `<line x1="${TRUNK}" y1="${FRAME_H + 1}" x2="${TRUNK}" y2="${H}" class="trunk"/>` : '',
   ]
   return picture(W, H, parts)
@@ -479,9 +486,10 @@ export const bodyPicture = (
   width: number,
   show: Show = SHOW_ALL,
   w: Words = WORDS,
+  tokens = true,
 ): Picture => {
   const W = Math.max(300, Math.round(width))
-  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w }
+  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens }
   const ag = assignAgents(snap)
   const sk = assignSkills(snap)
   const parts: string[] = []
@@ -496,7 +504,7 @@ export const bodyPicture = (
     const ax = PAD + Math.round((W - 2 * PAD) * 0.46) + 22
     for (const a of looseAgents) {
       parts.push(edge(TRUNK, 0, ax, y + AGENT_H / 2, isLive(a)))
-      parts.push(agentNode(a, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w))
+      parts.push(agentNode(a, ax, y, W - PAD - ax, now, show.skills ? ctx.agentSkills.get(a.id) ?? [] : [], ctx.w, ctx.tokens))
       y += AGENT_H + AGENT_GAP
     }
     if (show.skills && sk.loose.length) {
@@ -519,10 +527,11 @@ export const planPicture = (
   width: number,
   show: Show = SHOW_ALL,
   w: Words = WORDS,
+  tokens = true,
 ): Picture => {
   const W = Math.max(300, Math.round(width))
   const steps = snap.history?.[index]?.steps ?? []
-  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w }
+  const ctx: Ctx = { W, now, show, agentSkills: skillsOfAgent(snap), w, tokens }
   const parts: string[] = []
   const y = drawPlan(parts, steps, assignAgents(snap).past[index] ?? [], assignSkills(snap).past[index] ?? [], PAD, PAD, ctx, true)
   return picture(W, Math.max(40, Math.round(y + PAD - 10)), parts)

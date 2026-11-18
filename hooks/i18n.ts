@@ -55,6 +55,11 @@ export type Words = {
   thisSessionTip: string
   runningTip: (n: number) => string
   durationS: (s: number) => string
+  // tokens & settings
+  settings: string
+  showTokens: string
+  tokens: (n: number) => string
+  inContext: (n: number) => string
 }
 
 const en: Words = {
@@ -115,6 +120,14 @@ const en: Words = {
   thisSessionTip: ' (this session)',
   runningTip: n => `${n} ${enPlural(n, 'subagent', 'subagents')} running`,
   durationS: s => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`),
+  settings: 'Settings',
+  showTokens: 'Token usage',
+  tokens: n => `${shortCount(n)} tokens`,
+  inContext: n => `${shortCount(n)} in context`,
 }
+
+/** 950 → «950», 142 812 → «142.8k», 1 520 000 → «1.52M». */
+export const shortCount = (n: number) =>
+  n < 1000 ? String(Math.round(n)) : n < 1_000_000 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(2)}M`
 
 export const WORDS: Words = en

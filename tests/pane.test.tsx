@@ -429,3 +429,39 @@ test('both commands open the pane', async ($, on) => {
   expect(JSON.stringify(b)).toContain('opened')
   expect(opened).toContain('Agents, skills & plans')
 })
+
+test('subagent tokens and the session context show, and settings hide them', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let tokenCount = 0
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 152_400, window: 200_000 }, rateLimits: [] } }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 't1' }))
+  on('agent.list', () => ({ value: tokenCount
+    ? [{ id: 't1', description: 'Digest notes', type: 'Explore', status: 'running', tokenCount, tokenSamples: [], kind: 'local_agent', taskStatus: 'running', label: '', startTime: 0, cwd: '/', hasRow: true }]
+    : [] }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'x', description: 'Digest notes', subagentType: 'Explore' } as never)
+  tokenCount = 142_812
+  await clock.advance(1_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Explore · 0 calls · 142\.8k tokens/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /152\.4k in context · this session/ })).toBeTruthy()
+  await ui.press({ key: 'btn-view-graph' })
+  const svg = JSON.stringify(await ui.findAll({ type: 'Svg' }))
+  expect(svg).toContain('142.8k tokens')
+  expect(svg).toContain('152.4k in context')
+
+  await ui.press({ key: 'btn-settings' })
+  expect(await ui.find({ type: 'Text', text: /● Token usage/ })).toBeTruthy()
+  await ui.press({ key: 'btn-set-tokens' })
+  expect(await ui.find({ type: 'Text', text: /○ Token usage/ })).toBeTruthy()
+  expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).not.toContain('tokens')
+  await ui.press({ key: 'btn-view-list' })
+  expect(await ui.find({ type: 'Text', text: /tokens/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /in context/ })).toBeFalsy()
+  await ui.unmount()
+})

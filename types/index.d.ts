@@ -15,6 +15,8 @@ export type TrackedAgent = {
   step?: string
   /** Calls per tool name. */
   tools?: Record<string, number>
+  /** Tokens it has used, as the engine counts them: its latest request's input and all its output. */
+  tokens?: number
 }
 
 export type SkillStatus = 'active' | 'used' | 'failed'
@@ -48,6 +50,8 @@ export type SessionSnapshot = {
   skills?: TrackedSkill[]
   updatedAt: number
   isEnded?: boolean
+  /** Tokens in the main conversation's context window, after its last response. */
+  contextTokens?: number
 }
 
 export type SelfInfo = {
@@ -56,6 +60,9 @@ export type SelfInfo = {
   folder: string
   topic: string
 }
+
+/** The viewer's settings, from the pane's ⚙ card. */
+export type PaneSettings = { tokens: boolean }
 
 /** What the viewer folded or unfolded; keys are `plan:<id>`, `done:<id>`, `session:<id>`. */
 export type FoldState = { open: string[]; closed: string[] }
@@ -77,6 +84,8 @@ declare module 'claude-code' {
       skills: Shaped<TrackedSkill[]>
       shown: Shaped<{ plans: boolean; agents: boolean; skills: boolean }>
       stats: Shaped<UsageStats>
+      settings: Shaped<PaneSettings>
+      context: number
     }
   }
 }

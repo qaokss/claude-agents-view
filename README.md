@@ -13,6 +13,7 @@
 - **Subagents where they belong.** Each subagent hangs off the plan step it was spawned under, with its status, running time and its busiest tools (`Grep 21`, `Read 7` …). The tool it is using right now is outlined.
 - **Skills too.** Skills the conversation calls appear as pills under their step (◆ active, ◇ used, red on error, `×2` when repeated); skills a subagent calls sit on its card.
 - **List or graph.** A compact list for narrow panes, or an animated graph: flowing edges to running agents, pulsing steps.
+- **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙.
 - **Filters.** `● Plans ● Agents ● Skills` — turn any of them off. With plans off the graph becomes a timeline.
 - **All-time statistics.** Which skills and subagent types you use most, counted from every transcript on your machine.
 
@@ -56,13 +57,14 @@ The pane opens by itself when a session starts. If you close it, bring it back w
 | Control | Where | What it does |
 | --- | --- | --- |
 | `List │ Graph` | top right | Switches the view. The graph needs the desktop or mobile app; the terminal shows the list. |
+| `⚙` | top right | Settings: `● Token usage` shows or hides token counts. |
 | `● Plans ● Agents ● Skills` | under it | Shows or hides each kind, for all sessions at once. |
 | `▸` / `▾` | left of a session | Folds what hangs off a session; its name stays. |
 | `collapse all` | above other sessions | Folds or unfolds every other session. |
 | `▸ Past plans`, `▸ Finished subagents`, `▸ Used skills` | inside a session | Earlier work, folded by default. |
 | `Statistics ▴` | bottom right | Opens the all-time ranking of skills and subagent types. |
 
-Folds, the chosen view and filters are remembered per session.
+Folds, the chosen view, filters and settings are remembered per session.
 
 ## How it works
 
@@ -70,6 +72,7 @@ It is a Claude Code **hooks module** (`hooks/register.tsx`) — no server, no ne
 
 - **Plans** come from Claude's own task-list tool calls; **subagents** from `agent.spawn` and their turns; **skills** from `Skill` tool calls; **tool counts** from each subagent's tool calls.
 - **Sharing between sessions:** every session writes a small JSON snapshot to `~/.claude/mods-data/subagents-pane/sessions/` once a second when something changes (and a heartbeat every 30 s). The pane reads the others' snapshots; a session that stops updating disappears after 90 s.
+- **Tokens** come from the engine: a subagent's `tokenCount` in `$.agent.list()` (its latest request's input plus all its output, the figure Claude Code's own agent list shows), the session's from `$.session.usage()`.
 - **Session names** are the chat titles Claude Code keeps next to each transcript (`custom-title.json`).
 - **Statistics** scan your transcripts in `~/.claude/projects` with `grep` while the statistics card is open (every 30 s), counting each `Skill` and `Agent` call once.
 - **Pictures** in graph view are SVGs drawn by `hooks/graph.ts`, animated with SMIL, sized to the pane.
