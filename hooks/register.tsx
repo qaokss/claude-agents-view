@@ -15,7 +15,7 @@ import type {
   UsageStats,
 } from '../types'
 import { assignAgents, bodyPicture, earlierPicture, groupDigits, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill } from './graph'
-import type { Picture, Show } from './graph'
+import type { Picture, SessionState, Show } from './graph'
 import { WORDS } from './i18n'
 import { VENDOR_NAME, isFollowed, pollRuns, runDir, vendorOf } from './external'
 
@@ -69,6 +69,8 @@ const runs = atom({ plugin: 'subagents-pane', key: 'runs' } as const, [], { shap
 const RUNS_MAX = 30
 // When the user last sent a message, or a new plan replaced the old one.
 const turnAt = atom({ plugin: 'subagents-pane', key: 'turnAt' } as const, 0)
+// Since when a permission prompt or a question waits on the user (0: nothing does).
+const waitingAt = atom({ plugin: 'subagents-pane', key: 'waitingAt' } as const, 0)
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 
 // Newer engines count each agent's tokens on its row; older ones leave it out.
@@ -104,6 +106,8 @@ const SKILL_ICON: Record<TrackedSkill['status'], string> = { active: '◆', used
 const SKILL_COLOR: Record<TrackedSkill['status'], string> = { active: 'claude', used: 'subtle', failed: 'error' }
 const PLAN_TOOL = 'mcp__ccd_turn__update_plan'
 const WRAP_TOOL = 'mcp__ccd_turn__wrap_up'
+const QUESTION_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
+const WAIT_SHOWN_MS = 2_000
 
 const STEP_ICON: Record<PlanStep['status'], string> = {
   pending: '◌',
@@ -316,6 +320,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     updatedAt: t,
     ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
     ...((await read($, turnAt)) > 0 ? { turnAt: await read($, turnAt) } : {}),
+    ...((await read($, waitingAt)) > 0 ? { waitingAt: await read($, waitingAt) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
   }
 }
@@ -470,7 +475,8 @@ const tick = async ($: EngineInterface) => {
   else lastStatsRead = 0
   const anyLive =
     (await read($, agents)).some(isLive) ||
-    (await read($, others)).some(o => o.agents.some(isLive))
+    (await read($, waitingAt)) > 0 ||
+    (await read($, others)).some(o => o.agents.some(isLive) || !!o.waitingAt)
   if (anyLive) await update($, now, () => t)
 }
 
@@ -507,6 +513,7 @@ export const register: Register = on => {
     try {
       const t = await $.clock.now()
       await update($, turnAt, () => t)
+      await update($, waitingAt, () => 0)
     } catch {
       // folding is cosmetic
     }
@@ -688,7 +695,31 @@ export const register: Register = on => {
     return ran
   })
 
+  // A permission prompt: the engine's verdict is to ask, and a person answers.
+  // Questions to the person (AskUserQuestion, a plan to approve) wait too.
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    // a real call (not a query) whose ask a person answers
+    if (verdict.decision === 'ask' && e.tool_use_id && e.approver === 'person') {
+      try {
+        const t = await $.clock.now()
+        await update($, waitingAt, cur => cur || t)
+      } catch {
+        // the frame just won't blink
+      }
+    }
+    return verdict
+  })
+
   on('tool.call', async ($, e, next) => {
+    if (QUESTION_TOOLS.includes(e.tool)) {
+      try {
+        const t = await $.clock.now()
+        await update($, waitingAt, cur => cur || t)
+      } catch {
+        // the frame just won't blink
+      }
+    }
     if (!e.agentId && (e.tool === PLAN_TOOL || e.tool === WRAP_TOOL)) {
       const args = e as unknown as Record<string, unknown>
       try {
@@ -730,7 +761,18 @@ export const register: Register = on => {
       }
     }
 
-    return next(e)
+    const ran = await next(e)
+    try {
+      // answered (or refused): nothing waits any more, unless the turn ended on
+      // a question for the person, which waits for their message
+      const args = e as unknown as Record<string, unknown>
+      const t = await $.clock.now()
+      if (!e.agentId && e.tool === WRAP_TOOL && args.blocked === true) await update($, waitingAt, cur => cur || t)
+      else if ((await read($, waitingAt)) > 0) await update($, waitingAt, () => 0)
+    } catch {
+      // best-effort
+    }
+    return ran
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -1123,6 +1165,14 @@ export const register: Register = on => {
     }
 
     const nameOf = (snap: SessionSnapshot) => snap.title || snap.topic || w.untitled
+    // A prompt that waits a moment is the person's to answer (auto mode settles
+    // its own asks in well under that); a session waiting outranks working.
+    const stateOf = (snap: SessionSnapshot): SessionState =>
+      snap.waitingAt && t - snap.waitingAt >= WAIT_SHOWN_MS
+        ? 'waiting'
+        : snap.agents.some(isLive) || snap.plan.some(st => st.status === 'in_progress')
+          ? 'working'
+          : 'idle'
 
     // Another session's header: the fold triangle, its name, its plan's count;
     // folded, its current step and how many agents run under it.
@@ -1142,6 +1192,11 @@ export const register: Register = on => {
               </Text>
             </Box>
             <Box flexDirection="row" gap={1} flexShrink={0}>
+              {stateOf(snap) === 'waiting' && (
+                <Text size="caption" color="warning">
+                  {w.waitingForYou}
+                </Text>
+              )}
               {prefs.tokens && !!snap.contextTokens && (
                 <Text size="caption" color="subtle">
                   {w.inContext(snap.contextTokens)}
@@ -1229,7 +1284,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {picture(
-                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined),
+                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap)),
                 nameOf(snap),
                 `head-${snap.sessionId}`,
               )}
@@ -1322,11 +1377,18 @@ export const register: Register = on => {
             <Text color="claude">● </Text>
             {nameOf(mine)}
           </Text>
-          <Text size="caption" color="subtle">
-            {[prefs.tokens && mine.contextTokens ? w.inContext(mine.contextTokens) : '', w.thisSession]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
+          <Box flexDirection="row" gap={1} flexShrink={0}>
+            {stateOf(mine) === 'waiting' && (
+              <Text size="caption" color="warning">
+                {w.waitingForYou}
+              </Text>
+            )}
+            <Text size="caption" color="subtle">
+              {[prefs.tokens && mine.contextTokens ? w.inContext(mine.contextTokens) : '', w.thisSession]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+          </Box>
         </Box>
         {ownParts.length === 0 ? (
           <Text size="footnote" color="subtle">

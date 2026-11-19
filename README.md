@@ -15,6 +15,7 @@
 - **List or graph.** A compact list for narrow panes, or an animated graph: flowing edges to running agents, pulsing steps.
 - **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙.
 - **Codex and Gemini too.** When Claude (or one of its subagents) runs `codex` or `gemini` through Bash, the run gets a card of its own, with its model and tokens, and the agents *it* spawns hang under it, and theirs under them.
+- **Who is working, who waits for you.** A session at work (a subagent running or a plan step in progress) has a glint travelling round its frame in the graph. A session waiting on you (a permission prompt, a question, or a turn that ended on a question) knocks twice and rests, in amber, and says `● waiting for you` in the list.
 - **Filters.** `● Plans ● Agents ● Skills` — turn any of them off. With plans off the graph becomes a timeline.
 - **All-time statistics.** Which skills and subagent types you use most, counted from every transcript on your machine.
 

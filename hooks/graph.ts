@@ -270,7 +270,9 @@ const STYLE = `<style>
   .pill { fill: none; stroke: var(--line); stroke-width: 1; } .pill.active { stroke: var(--accent); } .pill.failed { stroke: var(--bad); }
   .dia { fill: none; stroke: var(--dim); stroke-width: 1.2; } .dia.active { fill: var(--accent); stroke: var(--accent); } .dia.failed { stroke: var(--bad); }
   .slink { fill: none; stroke: var(--dim); stroke-width: 1; stroke-dasharray: 1 3; }
-  .halo { fill: none; stroke: var(--accent); stroke-width: 4; }
+  .frame.work { stroke-opacity: 0.4; }
+  .comet { fill: none; stroke: var(--accent); stroke-linecap: round; }
+  .knock { fill: none; stroke: var(--warn); stroke-width: 2; }
   .glyph.run, .accent { fill: var(--accent); } .glyph.ok, .okfill { fill: var(--ok); } .glyph.bad { fill: var(--bad); }
   .glyph.wait { fill: var(--warn); } .glyph.idle, .glyph.off { fill: var(--dim); }
   .dot { stroke-width: 1.5; } .dot.ok { fill: var(--ok); stroke: var(--ok); }
@@ -509,6 +511,23 @@ const drawTimeline = (
  * pane's own fold triangle stands left of it. Unfolded, a stub of the trunk
  * leaves the frame's bottom, and the body picture below carries it on.
  */
+export type SessionState = 'idle' | 'working' | 'waiting'
+
+// Working: a soft glint that travels round the frame, a bright head with a
+// fading tail (dashes of different lengths, their heads together). The
+// lap is timed by the frame's perimeter, so it moves at one speed at any width.
+const comet = (w: number, h: number) => {
+  const lap = Math.max(2.4, (2 * (w + h)) / 170).toFixed(2)
+  const layer = (len: number, opacity: number, width: number) =>
+    `<rect x="1" y="1" width="${w}" height="${h}" rx="10" pathLength="100" class="comet" stroke-width="${width}" stroke-opacity="${opacity}" stroke-dasharray="${len} ${100 - len}" stroke-dashoffset="${len}"><animate attributeName="stroke-dashoffset" values="${len};${len - 100}" dur="${lap}s" repeatCount="indefinite"/></rect>`
+  // the layers overlap toward the head, so the tail fades in small steps
+  return [layer(28, 0.1, 2), layer(21, 0.13, 2), layer(15, 0.17, 2), layer(10, 0.22, 2), layer(6, 0.3, 2), layer(3, 0.85, 2.2)].join('')
+}
+
+// Waiting on the user: the whole frame knocks twice, then rests.
+const knock = (w: number, h: number) =>
+  `<rect x="1" y="1" width="${w}" height="${h}" rx="10" class="knock" stroke-opacity="0"><animate attributeName="stroke-opacity" values="0;0.95;0.1;0.95;0;0" keyTimes="0;0.08;0.18;0.26;0.4;1" dur="2s" repeatCount="indefinite"/></rect>`
+
 export const headerPicture = (
   name: string,
   plan: PlanStep[],
@@ -519,6 +538,7 @@ export const headerPicture = (
   show: Show = SHOW_ALL,
   w: Words = WORDS,
   contextTokens?: number,
+  state: SessionState = liveCount > 0 ? 'working' : 'idle',
 ): Picture => {
   const W = Math.max(200, Math.round(width))
   const FRAME_H = 38
@@ -531,10 +551,8 @@ export const headerPicture = (
   const nameChars = Math.floor((W - 28 - rightW) / 8.2)
   const parts = [
     `<title>${esc(`${name}${isOwn ? w.thisSessionTip : ''}${liveCount ? `\n${w.runningTip(liveCount)}` : ''}`)}</title>`,
-    `<rect x="1" y="1" width="${W - 2}" height="${FRAME_H}" rx="10" class="frame ${isOwn ? 'own' : ''}"/>`,
-    liveCount > 0
-      ? `<rect x="1" y="1" width="${W - 2}" height="${FRAME_H}" rx="10" class="halo" stroke-opacity="0"><animate attributeName="stroke-opacity" values="0.55;0;0.55" dur="1.8s" repeatCount="indefinite"/></rect>`
-      : '',
+    `<rect x="1" y="1" width="${W - 2}" height="${FRAME_H}" rx="10" class="frame ${isOwn ? 'own' : ''} ${state === 'idle' ? '' : 'work'}"/>`,
+    state === 'working' ? comet(W - 2, FRAME_H) : state === 'waiting' ? knock(W - 2, FRAME_H) : '',
     `<text x="14" y="25" class="head">${esc(cut(name, nameChars))}</text>`,
     count ? `<text x="${W - 14}" y="25" class="count end ${done === plan.length ? 'okfill' : ''}">${count}</text>` : '',
     ctxLabel ? `<text x="${ctxX}" y="24" class="tiny end">${esc(ctxLabel)}</text>` : '',

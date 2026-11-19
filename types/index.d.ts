@@ -78,6 +78,8 @@ export type SessionSnapshot = {
   contextTokens?: number
   /** When the latest user message or plan began; finished agents from before it fold away in the graph. */
   turnAt?: number
+  /** Since when a permission prompt or a question has waited on the user; absent when nothing does. */
+  waitingAt?: number
 }
 
 export type SelfInfo = {
@@ -114,6 +116,7 @@ declare module 'claude-code' {
       context: number
       runs: Shaped<ExternalRun[]>
       turnAt: number
+      waitingAt: number
     }
   }
 }

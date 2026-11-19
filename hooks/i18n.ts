@@ -60,6 +60,7 @@ export type Words = {
   showTokens: string
   tokens: (n: number) => string
   inContext: (n: number) => string
+  waitingForYou: string
 }
 
 const en: Words = {
@@ -124,6 +125,7 @@ const en: Words = {
   showTokens: 'Token usage',
   tokens: n => `${shortCount(n)} tokens`,
   inContext: n => `${shortCount(n)} in context`,
+  waitingForYou: '● waiting for you',
 }
 
 /** 950 → «950», 142 812 → «142.8k», 1 520 000 → «1.52M». */
