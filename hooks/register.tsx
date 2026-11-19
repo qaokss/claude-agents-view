@@ -463,6 +463,16 @@ const followRuns = async ($: EngineInterface, t: number) => {
   })
 }
 
+// Something now waits on the person: the frame knocks once it has waited a moment.
+const markWaiting = async ($: EngineInterface) => {
+  try {
+    const t = await $.clock.now()
+    await update($, waitingAt, cur => cur || t)
+  } catch {
+    // the frame just won't blink
+  }
+}
+
 const tick = async ($: EngineInterface) => {
   await sync($).catch(() => {})
   await readContext($).catch(() => {})
@@ -695,31 +705,19 @@ export const register: Register = on => {
     return ran
   })
 
-  // A permission prompt: the engine's verdict is to ask, and a person answers.
-  // Questions to the person (AskUserQuestion, a plan to approve) wait too.
-  on('tool.check', async ($, e, next) => {
-    const verdict = await next(e)
-    // a real call (not a query) whose ask a person answers
-    if (verdict.decision === 'ask' && e.tool_use_id && e.approver === 'person') {
-      try {
-        const t = await $.clock.now()
-        await update($, waitingAt, cur => cur || t)
-      } catch {
-        // the frame just won't blink
-      }
-    }
-    return verdict
+  // A permission dialog shown to the person (auto mode raises none for the
+  // calls it settles itself), or a form an MCP server puts to them.
+  on('classic.PermissionRequest', async ($, e, next) => {
+    await markWaiting($)
+    return next(e)
+  })
+  on('classic.Elicitation', async ($, e, next) => {
+    await markWaiting($)
+    return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
-    if (QUESTION_TOOLS.includes(e.tool)) {
-      try {
-        const t = await $.clock.now()
-        await update($, waitingAt, cur => cur || t)
-      } catch {
-        // the frame just won't blink
-      }
-    }
+    if (QUESTION_TOOLS.includes(e.tool)) await markWaiting($)
     if (!e.agentId && (e.tool === PLAN_TOOL || e.tool === WRAP_TOOL)) {
       const args = e as unknown as Record<string, unknown>
       try {
@@ -1284,7 +1282,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {picture(
-                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap)),
+                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap), t),
                 nameOf(snap),
                 `head-${snap.sessionId}`,
               )}

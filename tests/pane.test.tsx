@@ -696,17 +696,19 @@ test('other sessions at work come first', async ($, on) => {
   await ui.unmount()
 })
 
-test('a session at work glints round its frame, and one waiting on the user knocks', async ($, on) => {
+test('a session at work glints along its frame, and one waiting on the user knocks', async ($, on) => {
   const clock = mock.clock(on, { now: 6_000_000 })
   on('command.register', () => ({ value: { command: 'subagents' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('agent.list', () => ({ value: [] }))
   on('prompt.submit', (_, e) => e)
+  on('classic.PermissionRequest', () => ({}))
   let answer: (() => void) | undefined
   on('tool.call', async (_, e) => {
-    if ((e as { tool: string }).tool === 'AskUserQuestion') await new Promise<void>(r => (answer = r))
-    return { result: { answers: {} } }
+    const tool = (e as { tool: string }).tool
+    if (tool === 'AskUserQuestion' || tool === 'Bash') await new Promise<void>(r => (answer = r))
+    return { result: { answers: {}, stdout: '', stderr: '', interrupted: false } }
   })
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
@@ -718,7 +720,7 @@ test('a session at work glints round its frame, and one waiting on the user knoc
     await ui.press({ key: 'btn-view-graph' })
     const json = JSON.stringify(await ui.findAll({ type: 'Svg' }))
     // the class on an element, not the style sheet's rule
-    const svg = ['comet', 'knock'].filter(c => new RegExp(`class=\\\\+"${c}`).test(json)).join(' ')
+    const svg = ['glint', 'knock'].filter(c => new RegExp(`class=\\\\+"${c}`).test(json)).join(' ')
     await ui.unmount()
     // the list (the terminal draws no graph) says it in words
     const list = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -728,7 +730,7 @@ test('a session at work glints round its frame, and one waiting on the user knoc
   }
   // a step in progress: the glint runs, nothing knocks
   let now1 = await svgs()
-  expect(now1.svg).toContain('comet')
+  expect(now1.svg).toContain('glint')
   expect(now1.svg).not.toContain('knock')
 
   // a question for the user: knocks once it has waited a moment
@@ -739,7 +741,7 @@ test('a session at work glints round its frame, and one waiting on the user knoc
   await clock.advance(3_000)
   now1 = await svgs()
   expect(now1.svg).toContain('knock')
-  expect(now1.svg).not.toContain('comet')
+  expect(now1.svg).not.toContain('glint')
   expect(now1.waitingText).toBe(true)
 
   // answered: back to the glint
@@ -748,7 +750,22 @@ test('a session at work glints round its frame, and one waiting on the user knoc
   await clock.advance(1_000)
   now1 = await svgs()
   expect(now1.svg).not.toContain('knock')
-  expect(now1.svg).toContain('comet')
+  expect(now1.svg).toContain('glint')
+
+  // a permission dialog shown to the user knocks; an ask nobody is shown does not
+  const bash = $.tool.call({ tool: 'Bash', command: 'make', description: 'Build' } as never)
+  await clock.advance(3_000)
+  now1 = await svgs()
+  expect(now1.svg).not.toContain('knock')
+  await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: { command: 'make' } } as never)
+  await clock.advance(3_000)
+  now1 = await svgs()
+  expect(now1.svg).toContain('knock')
+  answer!()
+  await bash
+  await clock.advance(1_000)
+  now1 = await svgs()
+  expect(now1.svg).not.toContain('knock')
 
   // a turn that ends on a question for the user waits until their message
   await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'x', ask: 'Go?', blocked: true } as never)
@@ -759,5 +776,5 @@ test('a session at work glints round its frame, and one waiting on the user knoc
   await clock.advance(1_000)
   now1 = await svgs()
   expect(now1.svg).not.toContain('knock')
-  expect(now1.svg).not.toContain('comet')
+  expect(now1.svg).not.toContain('glint')
 })
