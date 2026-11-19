@@ -3,7 +3,7 @@
 **A live side pane for Claude Code that shows what your agents are doing** — the plan each session is working through, the subagents it spawned, the skills it called and the tools they use — across every open session, as a list or as a graph.
 
 <p align="center">
-  <img src="docs/graph-demo.gif" width="490" alt="Graph view in action: a session works through a four-step plan; subagent cards appear under the step they were spawned from, their tool counts climb, skills light up as pills, and steps turn green as they finish">
+  <img src="docs/graph-demo.gif" width="490" alt="Graph view in action: a session works through a four-step plan; subagent cards appear under the step they were spawned from with their token counts, a Codex run brings its own agent, a Gemini run drafts the docs, skills light up as pills, and steps turn green as they finish">
 </p>
 
 ## What you get
