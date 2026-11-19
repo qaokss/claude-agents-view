@@ -13,7 +13,7 @@
 - **Subagents where they belong.** Each subagent hangs off the plan step it was spawned under, with its status, running time and its busiest tools (`Grep 21`, `Read 7` …). The tool it is using right now is outlined.
 - **Skills too.** Skills the conversation calls appear as pills under their step (◆ active, ◇ used, red on error, `×2` when repeated); skills a subagent calls sit on its card.
 - **List or graph.** A compact list for narrow panes, or an animated graph: flowing edges to running agents, pulsing steps.
-- **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙.
+- **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙. Per-subagent counts need a Claude Code build that reports them; on older builds only the session's count shows.
 - **Codex and Gemini too.** When Claude (or one of its subagents) runs `codex` or `gemini` through Bash, the run gets a card of its own, with its model and tokens, and the agents *it* spawns hang under it, and theirs under them.
 - **Who is working, who waits for you.** A session at work (a subagent running or a plan step in progress) has a glint travelling round its frame in the graph. A session waiting on you (a permission prompt, a question, or a turn that ended on a question) knocks twice and rests, in amber, and says `● waiting for you` in the list.
 - **Filters.** `● Plans ● Agents ● Skills` — turn any of them off. With plans off the graph becomes a timeline.
@@ -27,6 +27,20 @@
 </table>
 
 <sub>The animation and screenshots use made-up demo data.</sub>
+
+## What's new in 0.4
+
+<p align="center">
+  <img src="docs/working-states.gif" width="460" alt="Four session headers: two at work with a glint travelling round the frame, one waiting on the user knocking in amber, one idle">
+</p>
+
+- **Working sessions glint.** A soft glint travels round the frame of every session at work.
+- **Sessions that need you knock.** A permission prompt, a question, or a turn that ended on a question makes the frame knock twice in amber, then rest. The list says `● waiting for you`.
+- **Working sessions come first.** Other sessions at work are listed above idle ones.
+- **Less clutter.** Finished subagents that ran outside a plan step fold under `▸ Finished subagents` once you send the next message.
+- **Token usage, Codex and Gemini** (0.2–0.3): see above.
+
+Full notes on the [releases page](https://github.com/qaokss/claude-agents-view/releases).
 
 ## Install
 
