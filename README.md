@@ -16,7 +16,7 @@
 - **Token usage.** Each subagent shows the tokens it has used (`142.8k tokens`), and each session the tokens in its context window (`152.4k in context`). Turn it off under ⚙. Per-subagent counts need a Claude Code build that reports them; on older builds only the session's count shows.
 - **Codex and Gemini too.** When Claude (or one of its subagents) runs `codex` or `gemini` through Bash, the run gets a card of its own, with its model and tokens, and the agents *it* spawns hang under it, and theirs under them.
 - **Who is working, who waits for you.** A session at work (a subagent running or a plan step in progress) has a soft glint sweeping along the bottom of its frame in the graph. A session waiting on you (a permission dialog, a question, or a turn that ended on a question) knocks twice and rests, and says `● waiting for you` in the list.
-- **Heads-up outside the pane.** When another session starts waiting for you, a toast says so; the status line under the prompt counts the other sessions at work (`◐ 2 sessions working · ● 1 waiting for you`). Both can be turned off under ⚙.
+- **Heads-up outside the pane.** When another session starts waiting for you, a toast says so; the status line under the prompt counts the other sessions at work (`◐ 2 sessions working · ● 1 waiting for you`). Both can be turned off under ⚙. The count shows wherever Claude Code draws a mod's status line.
 - **Stuck subagents stand out.** A running subagent that hasn't called a tool for 3 minutes turns amber and says how long it has been quiet (`⚠ quiet 4:10`).
 - **Time per step.** Each plan step shows how long it took, or has taken so far.
 - **A filling context warns you.** Within 15% of the point where Claude Code auto-compacts, the session's context count turns amber and says where that is (`145k in context · compacts at 167k`). With auto-compaction off, it warns past 80% of the model's window instead (`172k in context · 86% full`).
@@ -35,12 +35,16 @@
 
 ## What's new in 0.5
 
+<p align="center">
+  <img src="docs/whats-new-0.5.gif" width="520" alt="Six short scenes: plan steps with their times; a subagent quiet for three minutes turning amber; the context count turning amber as it nears auto-compaction; another session starting to wait, with a toast and a status line count; pressing a subagent in the list to open its conversation; the settings card under the gear with checkboxes">
+</p>
+
 - **A toast when another session waits for you**, and a count of working and waiting sessions in the status line.
 - **Stuck subagents** are marked after 3 minutes without a tool call.
 - **Time per plan step**, finished or running.
 - **A filling context** is flagged in amber as it nears auto-compaction.
 - **Press a subagent in the list** to open its conversation.
-- **Filters moved under ⚙**, and every switch there is a checkbox.
+- **Filters moved under ⚙**, with the options, as checkboxes.
 
 ## What's new in 0.4
 

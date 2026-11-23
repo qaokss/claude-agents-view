@@ -57,6 +57,7 @@ export type Words = {
   durationS: (s: number) => string
   // tokens & settings
   settings: string
+  options: string
   showTokens: string
   tokens: (n: number) => string
   inContext: (n: number) => string
@@ -80,7 +81,7 @@ const en: Words = {
   sessions: n => `${n} ${enPlural(n, 'session', 'sessions')}`,
   list: 'List',
   graph: 'Graph',
-  show: 'Show:',
+  show: 'Show',
   plans: 'Plans',
   agents: 'Agents',
   skills: 'Skills',
@@ -132,6 +133,7 @@ const en: Words = {
   runningTip: n => `${n} ${enPlural(n, 'subagent', 'subagents')} running`,
   durationS: s => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`),
   settings: 'Settings',
+  options: 'Options',
   showTokens: 'Token usage',
   tokens: n => `${shortCount(n)} tokens`,
   inContext: n => `${shortCount(n)} in context`,
@@ -149,7 +151,7 @@ const en: Words = {
       .filter(Boolean)
       .join(' · '),
   notifyWhenWaiting: 'Notify when a session waits for me',
-  countInStatusLine: 'Sessions at work in the status line',
+  countInStatusLine: 'Count busy sessions under the prompt',
   openAgentHint: 'Open its conversation',
 }
 

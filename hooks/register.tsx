@@ -912,30 +912,29 @@ export const register: Register = on => {
         </Box>
       )
     }
-    // Filters and settings are switches anyone reads as such: checkboxes.
-    const checkbox = (isOn: boolean) => (isOn ? '☑' : '☐')
-    // Filters: several may be on, so checkboxes, not segments.
-    const filter = (key: keyof Show, label: string) => (
-      <Button
-        key={`btn-show-${key}`}
-        plain
-        dimColor={!show[key]}
-        hover={{ color: 'text' }}
-        onPress={() => void update($, shownAtom, cur => ({ ...cur, [key]: !cur[key] }))}
-      >
+    // Filters and settings are checkboxes. A Button holds text alone (no
+    // image), so the box is a glyph, a size smaller than its label.
+    const checkRow = (key: string, isOn: boolean, label: string, onPress: () => void) => (
+      <Button key={key} plain dimColor={!isOn} hover={{ color: 'text' }} onPress={onPress}>
         <Text size="footnote">
-          {checkbox(show[key])} {label}
+          <Text size="caption">{isOn ? '☑' : '☐'}</Text> {label}
         </Text>
       </Button>
     )
+    // Filters: several may be on, so checkboxes, not segments.
+    const filter = (key: keyof Show, label: string) =>
+      checkRow(`btn-show-${key}`, show[key], label, () => void update($, shownAtom, cur => ({ ...cur, [key]: !cur[key] })))
     const allHidden = !show.plans && !show.agents && !show.skills
-    // Filters live in the ⚙ card, as a row of their own above the other settings.
-    const filterRow = (
-      <Box key="filters" flexDirection="column">
+
+    // The ⚙ card: what the pane shows, then the options. The open gear says
+    // what the card is, so it carries no title of its own.
+    const settingsOpen = isOpen(f, 'settings', false)
+    const settingsCard = settingsOpen ? (
+      <Box key="settings-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+        <Text size="caption" color="subtle">
+          {w.show}
+        </Text>
         <Box flexDirection="row" gap={2} alignItems="center">
-          <Text size="caption" color="subtle">
-            {w.show}
-          </Text>
           {filter('plans', w.plans)}
           {filter('agents', w.agents)}
           {filter('skills', w.skills)}
@@ -945,49 +944,18 @@ export const register: Register = on => {
             {w.allHidden}
           </Text>
         )}
-      </Box>
-    )
-
-    const settingsOpen = isOpen(f, 'settings', false)
-    const settingsCard = settingsOpen ? (
-      <Box key="settings-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
-        <Text size="caption" color="subtle">
-          {w.settings}
-        </Text>
-        {filterRow}
-        <Button
-          key="btn-set-tokens"
-          plain
-          dimColor={!prefs.tokens}
-          hover={{ color: 'text' }}
-          onPress={() => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens }))}
-        >
-          <Text size="footnote">
-            {checkbox(prefs.tokens)} {w.showTokens}
+        <Box marginTop={1}>
+          <Text size="caption" color="subtle">
+            {w.options}
           </Text>
-        </Button>
-        <Button
-          key="btn-set-notify"
-          plain
-          dimColor={prefs.notify === false}
-          hover={{ color: 'text' }}
-          onPress={() => void update($, settings, cur => ({ ...cur, notify: cur.notify === false }))}
-        >
-          <Text size="footnote">
-            {checkbox(prefs.notify !== false)} {w.notifyWhenWaiting}
-          </Text>
-        </Button>
-        <Button
-          key="btn-set-status"
-          plain
-          dimColor={prefs.statusLine === false}
-          hover={{ color: 'text' }}
-          onPress={() => void update($, settings, cur => ({ ...cur, statusLine: cur.statusLine === false }))}
-        >
-          <Text size="footnote">
-            {checkbox(prefs.statusLine !== false)} {w.countInStatusLine}
-          </Text>
-        </Button>
+        </Box>
+        {checkRow('btn-set-tokens', prefs.tokens, w.showTokens, () => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens })))}
+        {checkRow('btn-set-notify', prefs.notify !== false, w.notifyWhenWaiting, () =>
+          void update($, settings, cur => ({ ...cur, notify: cur.notify === false })),
+        )}
+        {checkRow('btn-set-status', prefs.statusLine !== false, w.countInStatusLine, () =>
+          void update($, settings, cur => ({ ...cur, statusLine: cur.statusLine === false })),
+        )}
       </Box>
     ) : null
     // The context label, warning-coloured once the window is nearly full.
@@ -1011,7 +979,14 @@ export const register: Register = on => {
           {liveAll > 0 && <Text color="claude"> · ◐ {liveAll}</Text>}
         </Text>
         <Box flexDirection="row" gap={1} alignItems="center">
-          <Box key="settings-button">
+          {/* the gear in a cell like the List/Graph control's, filled while open */}
+          <Box
+            key="settings-button"
+            borderStyle="round"
+            borderColor="promptBorder"
+            paddingX={1}
+            backgroundColor={settingsOpen ? 'promptBorder' : undefined}
+          >
             <Button
               key="btn-settings"
               plain
@@ -1019,7 +994,7 @@ export const register: Register = on => {
               hover={{ color: 'text' }}
               onPress={() => void update($, fold, cur => setOpen(cur, 'settings', !settingsOpen))}
             >
-              <Text size="heading">⚙</Text>
+              <Text size="footnote">⚙</Text>
             </Button>
           </Box>
           {canGraph && (
