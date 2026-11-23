@@ -30,6 +30,21 @@ export const SHOW_ALL: Show = { plans: true, agents: true, skills: true }
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
 const isLive = (a: TrackedAgent) => LIVE.includes(a.status)
 
+// A running subagent with no tool call in flight and none for this long may be stuck.
+export const STALL_MS = 3 * 60_000
+export const isStalled = (a: TrackedAgent, now: number) =>
+  a.status === 'running' && !a.vendor && (a.busy ?? 0) === 0 && now - (a.activeAt ?? a.startedAt) > STALL_MS
+export const quietMs = (a: TrackedAgent, now: number) => now - (a.activeAt ?? a.startedAt)
+
+// How long a step took, or has taken so far; '' when its start was not seen.
+export const stepTime = (st: PlanStep, now: number) =>
+  !st.startedAt || st.status === 'pending' || (st.status === 'completed' && !st.endedAt)
+    ? ''
+    : clockTime((st.status === 'completed' ? st.endedAt! : Math.max(now, st.startedAt)) - st.startedAt)
+
+// The context is nearly full from here on.
+export const CONTEXT_WARN_PERCENT = 80
+
 const STATUS_CLASS: Record<AgentStatusWord, string> = {
   pending: 'idle',
   running: 'run',
@@ -165,7 +180,8 @@ const agentNode = (
   const tokLabel = tok ? wd.tokens(tok) : ''
   const tokW = tok ? Math.round(tokLabel.length * 5.6 + 8) : 0
   // a Codex or Gemini card names its vendor and model in a chip, the line its time alone
-  const cls = STATUS_CLASS[a.status]
+  const stalled = isStalled(a, now)
+  const cls = stalled ? 'wait' : STATUS_CLASS[a.status]
   const running = a.status === 'running'
   const time = clockTime((a.endedAt ?? Math.max(now, a.startedAt)) - a.startedAt)
   const textChars = Math.floor((w - 34) / CHAR)
@@ -192,7 +208,7 @@ const agentNode = (
     ...counts.map(([name, n]) => ({
       label: `${shortTool(name)} ${n}`,
       tip: `${name}: ${n}`,
-      cls: running && name === a.lastTool && !INTERNAL.includes(name) ? 'now' : '',
+      cls: running && !stalled && name === a.lastTool && !INTERNAL.includes(name) ? 'now' : '',
     })),
   ]
   const chips: string[] = []
@@ -224,6 +240,7 @@ const agentNode = (
   const tip = [
     a.description || wd.noDescription,
     `${a.type} · ${wd.agentStatus[a.status]} · ${time}${tok ? ` · ${wd.tokens(tok)}` : ''}`,
+    stalled ? `${wd.quietFor(clockTime(quietMs(a, now)))}: ${wd.quietTip}` : '',
     a.vendor ? '' : wd.toolCalls(a.toolCalls),
     ...counts.map(([n, c]) => `  ${n}: ${c}`),
     ...agentSkills.map(k => `  ${wd.skillWord} ${skillTip(k, wd)}`),
@@ -239,7 +256,7 @@ const agentNode = (
         : `<text x="${x + 8}" y="${y + 20}" class="glyph ${cls}">${STATUS_GLYPH[a.status]}</text>`
     }
     <text x="${x + 26}" y="${y + 19}" class="label strong">${esc(cut(a.description || wd.noDescription, textChars))}</text>
-    <text x="${x + 26}" y="${y + 33}" class="tiny">${esc(cut(a.vendor ? time : `${a.type} · ${time}`, Math.floor((w - 34 - tokW) / 5.6)))}</text>
+    <text x="${x + 26}" y="${y + 33}" class="tiny${stalled ? ' warntext' : ''}">${esc(cut(stalled ? wd.quietFor(clockTime(quietMs(a, now))) : a.vendor ? time : `${a.type} · ${time}`, Math.floor((w - 34 - tokW) / 5.6)))}</text>
     ${tok ? `<text x="${x + w - 10}" y="${y + 33}" class="tiny end">${esc(tokLabel)}</text>` : ''}
     ${chips.join('\n')}
   </g>`
@@ -273,6 +290,7 @@ const STYLE = `<style>
   .glint { stroke-width: 2; stroke-linecap: round; }
   .knock { fill: none; stroke: var(--accent); stroke-width: 2.5; }
   .frame.wait { stroke-opacity: 0.35; }
+  .tiny.warntext { fill: var(--warn); }
   .glyph.run, .accent { fill: var(--accent); } .glyph.ok, .okfill { fill: var(--ok); } .glyph.bad { fill: var(--bad); }
   .glyph.wait { fill: var(--warn); } .glyph.idle, .glyph.off { fill: var(--dim); }
   .dot { stroke-width: 1.5; } .dot.ok { fill: var(--ok); stroke: var(--ok); }
@@ -427,7 +445,9 @@ const drawPlan = (
   let bottom = top
   const stepChars = Math.floor((leftW - (TEXT_X - PAD)) / CHAR)
   for (const st of steps) {
-    const lines = wrap(st.content, stepChars, 2)
+    const took = isPast && st.status !== 'completed' ? '' : stepTime(st, now)
+    const tookW = took ? Math.ceil((took.length * 5.6 + 8) / CHAR) : 0
+    const lines = wrap(st.content, stepChars - tookW, 2)
     const textH = lines.length * STEP_LINE + 6
     // A step named twice in one plan gets its agents and skills once.
     const first = !placed.has(st.content)
@@ -441,7 +461,9 @@ const drawPlan = (
     const agentsH = heights.reduce((n, h) => n + h + AGENT_GAP, 0) - (mine.length ? AGENT_GAP : 0)
     const rowH = Math.max(cy - y + textH / 2 + pillsH, agentsH)
     const sc = isPast && st.status !== 'completed' ? 'skip' : STEP_CLASS[st.status]
-    parts.push(`<g><title>${esc(sc === 'skip' ? `${st.content}\n${ctx.w.stepDropped}` : st.content)}</title>
+    const firstY = cy - ((lines.length - 1) * STEP_LINE) / 2 + 4
+    parts.push(`<g><title>${esc(sc === 'skip' ? `${st.content}\n${ctx.w.stepDropped}` : `${st.content}${took ? ` · ${took}` : ''}`)}</title>
+      ${took ? `<text x="${PAD + leftW - 4}" y="${firstY}" class="tiny end">${esc(took)}</text>` : ''}
       ${sc === 'run' ? `<circle cx="${TRUNK}" cy="${cy}" r="8" class="pulse ring"><animate attributeName="r" values="5;10;5" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.5;0.05;0.5" dur="1.6s" repeatCount="indefinite"/></circle>` : ''}
       <circle cx="${TRUNK}" cy="${cy}" r="5" class="dot ${sc}"/>
       ${lines.map((l, i) => `<text x="${TEXT_X}" y="${cy - ((lines.length - 1) * STEP_LINE) / 2 + 4 + i * STEP_LINE}" class="step ${sc}">${esc(l)}</text>`).join('')}
@@ -555,13 +577,15 @@ export const headerPicture = (
   contextTokens?: number,
   state: SessionState = liveCount > 0 ? 'working' : 'idle',
   now = 0,
+  contextPercent?: number,
 ): Picture => {
   const W = Math.max(200, Math.round(width))
   const FRAME_H = 38
   const H = isOpen ? 48 : 40
   const done = plan.filter(s => s.status === 'completed').length
   const count = show.plans && plan.length > 0 ? `${done}/${plan.length}` : ''
-  const ctxLabel = contextTokens ? w.inContext(contextTokens) : ''
+  const isFull = !!contextTokens && (contextPercent ?? 0) >= CONTEXT_WARN_PERCENT
+  const ctxLabel = contextTokens ? `${w.inContext(contextTokens)}${isFull ? ` · ${w.contextFull(contextPercent!)}` : ''}` : ''
   const ctxX = W - 14 - (count ? count.length * 8 + 12 : 0)
   const rightW = (count ? count.length * 8 + 14 : 0) + (ctxLabel ? ctxLabel.length * 6.2 + 12 : 0)
   const nameChars = Math.floor((W - 28 - rightW) / 8.2)
@@ -570,7 +594,7 @@ export const headerPicture = (
     `<rect x="1" y="1" width="${W - 2}" height="${FRAME_H}" rx="10" class="frame ${isOwn ? 'own' : ''} ${state === 'waiting' ? 'wait' : ''}"/>`,
     `<text x="14" y="25" class="head">${esc(cut(name, nameChars))}</text>`,
     count ? `<text x="${W - 14}" y="25" class="count end ${done === plan.length ? 'okfill' : ''}">${count}</text>` : '',
-    ctxLabel ? `<text x="${ctxX}" y="24" class="tiny end">${esc(ctxLabel)}</text>` : '',
+    ctxLabel ? `<text x="${ctxX}" y="24" class="tiny end${isFull ? ' warntext' : ''}">${esc(ctxLabel)}</text>` : '',
     isOpen ? `<line x1="${TRUNK}" y1="${FRAME_H + 1}" x2="${TRUNK}" y2="${H}" class="trunk"/>` : '',
     state === 'working' ? glint(W - 2, FRAME_H, now, digest(`${isOwn ? 'own' : ''}:${name}`), isOwn) : state === 'waiting' ? knock(W - 2, FRAME_H, now) : '',
   ]

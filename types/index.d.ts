@@ -26,6 +26,10 @@ export type TrackedAgent = {
   model?: string
   /** The card this one hangs under: the Claude subagent that ran a CLI, or the run that started this agent. */
   parentId?: string
+  /** When it last started or finished a tool call; with none in flight, a long quiet means it may be stuck. */
+  activeAt?: number
+  /** Its tool calls in flight. */
+  busy?: number
 }
 
 /** A Bash call that runs a frontier CLI, as the pane follows its log. */
@@ -59,7 +63,14 @@ export type TrackedSkill = {
   count: number
 }
 
-export type PlanStep = { content: string; status: 'pending' | 'in_progress' | 'completed' }
+export type PlanStep = {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  /** When it went in progress. */
+  startedAt?: number
+  /** When it was checked off. */
+  endedAt?: number
+}
 
 export type ArchivedPlan = { steps: PlanStep[]; endedAt: number }
 
@@ -76,6 +87,8 @@ export type SessionSnapshot = {
   isEnded?: boolean
   /** Tokens in the main conversation's context window, after its last response. */
   contextTokens?: number
+  /** That context as a share of the model's window, 0 to 100. */
+  contextPercent?: number
   /** When the latest user message or plan began; finished agents from before it fold away in the graph. */
   turnAt?: number
   /** Since when a permission prompt or a question has waited on the user; absent when nothing does. */
@@ -90,7 +103,13 @@ export type SelfInfo = {
 }
 
 /** The viewer's settings, from the pane's ⚙ card. */
-export type PaneSettings = { tokens: boolean }
+export type PaneSettings = {
+  tokens: boolean
+  /** A toast when another session starts waiting on the user; absent counts as on. */
+  notify?: boolean
+  /** Working and waiting sessions counted in the status line; absent counts as on. */
+  statusLine?: boolean
+}
 
 /** What the viewer folded or unfolded; keys are `plan:<id>`, `done:<id>`, `session:<id>`. */
 export type FoldState = { open: string[]; closed: string[] }
@@ -114,6 +133,7 @@ declare module 'claude-code' {
       stats: Shaped<UsageStats>
       settings: Shaped<PaneSettings>
       context: number
+      contextPercent: number
       runs: Shaped<ExternalRun[]>
       turnAt: number
       waitingAt: number

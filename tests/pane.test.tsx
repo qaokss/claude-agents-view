@@ -485,7 +485,7 @@ test('subagent tokens and the session context show, and settings hide them', asy
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /Explore · 0 calls · 142\.8k tokens/ })).toBeTruthy()
-  expect(await ui.find({ type: 'Text', text: /152\.4k in context · this session/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^152\.4k in context$/ })).toBeTruthy()
   await ui.press({ key: 'btn-view-graph' })
   const svg = JSON.stringify(await ui.findAll({ type: 'Svg' }))
   expect(svg).toContain('142.8k tokens')
@@ -811,4 +811,121 @@ test('a session at work glints along its frame, and one waiting on the user knoc
   now1 = await svgs()
   expect(now1.svg).not.toContain('knock')
   expect(now1.svg).not.toContain('glint')
+})
+
+test('a step shows how long it took, a quiet subagent is marked, and its row opens it', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [] }))
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'q1' }))
+  on('tool.call', () => ({ result: {} }))
+  const viewed: string[] = []
+  on('ui.view', (_, e) => {
+    viewed.push(String((e as { agentId?: string }).agentId))
+    return { value: {} }
+  })
+
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [
+    { content: 'Map the code', status: 'in_progress' },
+    { content: 'Fix the bug', status: 'pending' },
+  ] } as never)
+  await clock.advance(125_000)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true } as never)
+  await $.agent.spawn({ prompt: 'Look', description: 'Dig into logs', subagentType: 'Explore' } as never)
+  await $.tool.call({ tool: 'Read', agentId: 'q1', file_path: '/a' } as never)
+  await clock.advance(61_000)
+
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^2:05$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^1:01$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /quiet/ })).toBeFalsy()
+  await ui.unmount()
+
+  await clock.advance(150_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /⚠ quiet 3:31/ })).toBeTruthy()
+  await ui.press({ key: 'btn-open-q1' })
+  expect(viewed).toEqual(['q1'])
+  await ui.press({ key: 'btn-view-graph' })
+  const svg = JSON.stringify(await ui.findAll({ type: 'Svg' }))
+  expect(svg).toContain('⚠ quiet 3:31')
+  expect(svg).toContain('2:05')
+  await ui.unmount()
+
+  // a new tool call: it is working again
+  await $.tool.call({ tool: 'Grep', agentId: 'q1', pattern: 'x' } as never)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).not.toContain('quiet')
+  await ui.unmount()
+})
+
+test('a nearly full context is flagged', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('agent.list', () => ({ value: [] }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 172_000, window: 200_000, percent: 86 }, rateLimits: [] } }))
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /172\.0k in context · 86% full/ })).toBeTruthy()
+  await ui.press({ key: 'btn-view-graph' })
+  expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).toMatch(/warntext[^<]*>172\.0k in context · 86% full/)
+  await ui.unmount()
+})
+
+test('another session waiting raises a toast once, and the status line counts sessions', async ($, on) => {
+  const clock = mock.clock(on, { now: 5_000_000 })
+  const snap = (id: string, extra: object) => ({
+    sessionId: id, title: id === 'w1' ? 'Landing page' : 'Refactor', folder: 'x', topic: '',
+    plan: [{ content: 'Step', status: 'in_progress' }], agents: [], updatedAt: 4_999_000, ...extra,
+  })
+  const files: Record<string, object> = { 'w1.json': snap('w1', { waitingAt: 4_990_000 }), 'b1.json': snap('b1', {}) }
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => ({ value: !String((e as { path?: string }).path).includes('/.claude/projects') }))
+  on('fs.list', (_, e) => {
+    const path = (e as { path?: string }).path ?? ''
+    return { value: path.endsWith('/.claude/projects')
+      ? []
+      : Object.keys(files).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 4_999_000, isLink: false })) }
+  })
+  on('fs.read', (_, e) => ({ value: JSON.stringify(files[String((e as { path?: string }).path).split('/').pop()!]) }))
+  const toasts: string[] = []
+  const lines: (string | undefined)[] = []
+  on('ui.toast', (_, e) => {
+    toasts.push((e as { text: string }).text)
+    return { value: undefined }
+  })
+  on('ui.status', (_, e) => {
+    lines.push((e as { text?: string }).text)
+    return { value: undefined }
+  })
+
+  await $.session.start({ cwd: '/x', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+  await clock.advance(1_000)
+  expect(toasts).toEqual(['“Landing page” is waiting for your answer'])
+  expect(lines.at(-1)).toBe('◐ 1 session working · ● 1 waiting for you')
+
+  // switched off in settings: no line, and no toast for the next wait
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'btn-settings' })
+  await ui.press({ key: 'btn-set-status' })
+  await ui.press({ key: 'btn-set-notify' })
+  await ui.unmount()
+  files['w1.json'] = snap('w1', { waitingAt: 5_001_500 })
+  await clock.advance(1_000)
+  await clock.advance(2_000)
+  expect(toasts).toHaveLength(1)
+  expect(lines.at(-1)).toBeUndefined()
 })

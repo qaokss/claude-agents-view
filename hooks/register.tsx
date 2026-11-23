@@ -14,7 +14,7 @@ import type {
   TrackedSkill,
   UsageStats,
 } from '../types'
-import { assignAgents, bodyPicture, earlierPicture, groupDigits, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill } from './graph'
+import { CONTEXT_WARN_PERCENT, assignAgents, bodyPicture, earlierPicture, groupDigits, isStalled, quietMs, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill, stepTime } from './graph'
 import type { Picture, SessionState, Show } from './graph'
 import { WORDS } from './i18n'
 import { VENDOR_NAME, isFollowed, pollRuns, runDir, vendorOf } from './external'
@@ -64,6 +64,8 @@ const settings = atom({ plugin: 'subagents-pane', key: 'settings' } as const, DE
 })
 // Tokens in this session's context window after its last response.
 const context = atom({ plugin: 'subagents-pane', key: 'context' } as const, 0)
+// That context as a share of the model's window, 0 to 100.
+const contextPercent = atom({ plugin: 'subagents-pane', key: 'contextPercent' } as const, 0)
 // Codex and Gemini runs Claude started through Bash, followed by their logs.
 const runs = atom({ plugin: 'subagents-pane', key: 'runs' } as const, [], { shape: 'runs-1' })
 const RUNS_MAX = 30
@@ -179,6 +181,19 @@ const applyPlanCall = (steps: PlanStep[], args: Record<string, unknown>): PlanSt
   return next
 }
 
+// Carries each step's times over a plan call and stamps the changes: a step
+// that goes in progress starts now, one checked off ends now.
+const stampTimes = (old: PlanStep[], steps: PlanStep[], t: number): PlanStep[] =>
+  steps.map((st, i) => {
+    const was = old[i]?.content === st.content ? old[i] : old.find(o => o.content === st.content)
+    const startedAt = st.startedAt ?? was?.startedAt ?? (st.status === 'in_progress' ? t : undefined)
+    const endedAt = st.status === 'completed' ? (st.endedAt ?? was?.endedAt ?? (startedAt ? t : undefined)) : undefined
+    const next: PlanStep = { content: st.content, status: st.status }
+    if (startedAt && st.status !== 'pending') next.startedAt = startedAt
+    if (endedAt) next.endedAt = endedAt
+    return next
+  })
+
 // ---- the chat's title -------------------------------------------------------
 
 // The app keeps each chat's name in `<projects>/<folder>/<sessionId>/custom-title.json`
@@ -267,7 +282,8 @@ const sync = async ($: EngineInterface) => {
       }
       // The engine reads an agent's tokens every few seconds; a finished one
       // keeps its last count after its row is gone.
-      if (tokenCountOf(info) > 0 && tokenCountOf(info) !== known.tokens) next = { ...next, tokens: tokenCountOf(info) }
+      // a new count means it answered a request: it is not stuck
+      if (tokenCountOf(info) > 0 && tokenCountOf(info) !== known.tokens) next = { ...next, tokens: tokenCountOf(info), activeAt: t }
       if (next !== known) {
         byId.set(info.id, next)
         changed = true
@@ -292,6 +308,7 @@ const track = async (
     prompt: oneLine(e.prompt, 300),
     status: 'running',
     startedAt: t,
+    activeAt: t,
     toolCalls: 0,
   }
   // A resumed agent (SendMessage to it) keeps its record: its tool counts,
@@ -299,7 +316,7 @@ const track = async (
   await update($, agents, list => {
     const known = list.find(a => a.id === tracked.id)
     if (known) {
-      return list.map(a => (a.id === tracked.id ? { ...a, status: 'running' as const, endedAt: undefined } : a))
+      return list.map(a => (a.id === tracked.id ? { ...a, status: 'running' as const, endedAt: undefined, activeAt: t } : a))
     }
     return [...list, tracked].slice(-100)
   })
@@ -331,6 +348,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     skills: (await read($, skills)).slice(-30),
     updatedAt: t,
     ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
+    ...((await read($, contextPercent)) > 0 ? { contextPercent: await read($, contextPercent) } : {}),
     ...((await read($, turnAt)) > 0 ? { turnAt: await read($, turnAt) } : {}),
     ...((await read($, waitingAt)) > 0 ? { waitingAt: await read($, waitingAt) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
@@ -425,8 +443,11 @@ const gather = async ($: EngineInterface, t: number) => {
 
 // The main conversation's context, as the status line counts it.
 const readContext = async ($: EngineInterface) => {
-  const tokens = (await $.session.usage()).context.tokens ?? 0
+  const usage = (await $.session.usage()).context
+  const tokens = usage.tokens ?? 0
+  const percent = usage.percent ?? 0
   if (tokens !== (await read($, context))) await update($, context, () => tokens)
+  if (percent !== (await read($, contextPercent))) await update($, contextPercent, () => percent)
 }
 
 // Reads the logs of the Codex and Gemini runs still followed, every few
@@ -475,6 +496,41 @@ const followRuns = async ($: EngineInterface, t: number) => {
   })
 }
 
+// A prompt that waits a moment is the person's to answer (auto mode settles
+// its own asks in well under that); a session waiting outranks working.
+const stateOfSession = (snap: SessionSnapshot, t: number): SessionState =>
+  snap.waitingAt && t - snap.waitingAt >= WAIT_SHOWN_MS
+    ? 'waiting'
+    : snap.agents.some(isLive) || snap.plan.some(st => st.status === 'in_progress')
+      ? 'working'
+      : 'idle'
+
+const nameOfSession = (snap: SessionSnapshot) => snap.title || topicFrom(snap.topic ?? '', 60) || w.untitled
+
+// Other sessions, outside the pane: a toast when one starts waiting on the
+// person, and a count of those at work in the status line.
+const toasted = new Map<string, number>()
+let lastStatus: string | undefined
+const tellOthers = async ($: EngineInterface, t: number) => {
+  const prefs = await read($, settings)
+  const list = await read($, others)
+  const states = list.map(o => ({ o, state: stateOfSession(o, t) }))
+  if (prefs.notify !== false) {
+    for (const { o, state } of states) {
+      if (state !== 'waiting' || toasted.get(o.sessionId) === o.waitingAt) continue
+      toasted.set(o.sessionId, o.waitingAt!)
+      $.ui.toast(w.waitsToast(oneLine(nameOfSession(o), 50)), { timeoutMs: 8_000 })
+    }
+  }
+  const working = states.filter(x => x.state === 'working').length
+  const waiting = states.filter(x => x.state === 'waiting').length
+  const text = prefs.statusLine !== false && (working || waiting) ? w.statusLine(working, waiting) : undefined
+  if (text !== lastStatus) {
+    lastStatus = text
+    $.ui.status(text)
+  }
+}
+
 // Something now waits on the person: the frame knocks once it has waited a moment.
 const markWaiting = async ($: EngineInterface) => {
   try {
@@ -493,6 +549,7 @@ const tick = async ($: EngineInterface) => {
   await refreshTitle($, t).catch(() => {})
   await publish($, t).catch(() => {})
   await gather($, t).catch(() => {})
+  await tellOthers($, t).catch(() => {})
   if (isOpen(await read($, fold), 'stats', false)) await readStats($, t).catch(() => {})
   else lastStatsRead = 0
   const anyLive =
@@ -587,7 +644,10 @@ export const register: Register = on => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId) await patch($, e.agentId, a => ({ ...a, status: 'running', endedAt: undefined }))
+    if (e.agentId) {
+      const t = await $.clock.now().catch(() => 0)
+      await patch($, e.agentId, a => ({ ...a, status: 'running', endedAt: undefined, ...(t ? { activeAt: t } : {}) }))
+    }
 
     return next(e)
   })
@@ -743,11 +803,16 @@ export const register: Register = on => {
           const t = await $.clock.now()
           await update($, turnAt, () => t)
         }
+        const stampAt = await $.clock.now()
         await update($, plan, steps =>
-          e.tool === WRAP_TOOL
-            ? // Wrapping up checks off the whole list, as the app's own list does.
-              steps.map((s): PlanStep => ({ ...s, status: 'completed' }))
-            : applyPlanCall(steps, args),
+          stampTimes(
+            steps,
+            e.tool === WRAP_TOOL
+              ? // Wrapping up checks off the whole list, as the app's own list does.
+                steps.map((s): PlanStep => ({ ...s, status: 'completed' }))
+              : applyPlanCall(steps, args),
+            stampAt,
+          ),
         )
       } catch {
         // the pane misses this change; the call itself goes on
@@ -758,8 +823,11 @@ export const register: Register = on => {
       try {
         // The engine's own hand-back at a subagent's end is not the agent's work.
         if (!INTERNAL_TOOLS.includes(e.tool)) {
+          const t = await $.clock.now()
           await patch($, id, a => ({
             ...a,
+            activeAt: t,
+            busy: (a.busy ?? 0) + 1,
             toolCalls: a.toolCalls + 1,
             lastTool: e.tool,
             tools: { ...(a.tools ?? {}), [e.tool]: ((a.tools ?? {})[e.tool] ?? 0) + 1 },
@@ -770,7 +838,15 @@ export const register: Register = on => {
       }
     }
 
-    const ran = await next(e)
+    let ran: Awaited<ReturnType<typeof next>>
+    try {
+      ran = await next(e)
+    } finally {
+      if (e.agentId && !INTERNAL_TOOLS.includes(e.tool)) {
+        const t = await $.clock.now().catch(() => 0)
+        await patch($, e.agentId, a => ({ ...a, busy: Math.max(0, (a.busy ?? 1) - 1), ...(t ? { activeAt: t } : {}) }))
+      }
+    }
     try {
       // answered (or refused): nothing waits any more, unless the turn ended on
       // a question for the person, which waits for their message
@@ -836,8 +912,41 @@ export const register: Register = on => {
             {prefs.tokens ? '●' : '○'} {w.showTokens}
           </Text>
         </Button>
+        <Button
+          key="btn-set-notify"
+          plain
+          dimColor={prefs.notify === false}
+          hover={{ color: 'text' }}
+          onPress={() => void update($, settings, cur => ({ ...cur, notify: cur.notify === false }))}
+        >
+          <Text size="footnote">
+            {prefs.notify !== false ? '●' : '○'} {w.notifyWhenWaiting}
+          </Text>
+        </Button>
+        <Button
+          key="btn-set-status"
+          plain
+          dimColor={prefs.statusLine === false}
+          hover={{ color: 'text' }}
+          onPress={() => void update($, settings, cur => ({ ...cur, statusLine: cur.statusLine === false }))}
+        >
+          <Text size="footnote">
+            {prefs.statusLine !== false ? '●' : '○'} {w.countInStatusLine}
+          </Text>
+        </Button>
       </Box>
     ) : null
+    // The context label, warning-coloured once the window is nearly full.
+    const contextLabel = (snap: SessionSnapshot) => {
+      if (!prefs.tokens || !snap.contextTokens) return null
+      const isFull = (snap.contextPercent ?? 0) >= CONTEXT_WARN_PERCENT
+      return (
+        <Text size="caption" color={isFull ? 'warning' : 'subtle'}>
+          {w.inContext(snap.contextTokens)}
+          {isFull ? ` · ${w.contextFull(snap.contextPercent!)}` : ''}
+        </Text>
+      )
+    }
     const sessionCount = 1 + rest.length
     const liveAll =
       mine.agents.filter(isLive).length + rest.reduce((n, s) => n + s.agents.filter(isLive).length, 0)
@@ -1006,15 +1115,22 @@ export const register: Register = on => {
           </Text>
         </Box>
       ) : (
-        <Box key={key} flexDirection="row">
-          {iconCell(STEP_ICON[st.status], STEP_COLOR[st.status], st.status === 'completed')}
-          <Text
-            color={st.status === 'in_progress' ? 'text' : 'inactive'}
-            weight={st.status === 'in_progress' ? 'medium' : 'regular'}
-            wrap="wrap"
-          >
-            {st.content}
-          </Text>
+        <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
+          <Box flexDirection="row" flexShrink={1}>
+            {iconCell(STEP_ICON[st.status], STEP_COLOR[st.status], st.status === 'completed')}
+            <Text
+              color={st.status === 'in_progress' ? 'text' : 'inactive'}
+              weight={st.status === 'in_progress' ? 'medium' : 'regular'}
+              wrap="wrap"
+            >
+              {st.content}
+            </Text>
+          </Box>
+          {!!stepTime(st, t) && (
+            <Text size="caption" color="subtle">
+              {stepTime(st, t)}
+            </Text>
+          )}
         </Box>
       )
     const steps = (list: PlanStep[], keyBase: string, isPast = false) => (
@@ -1029,17 +1145,37 @@ export const register: Register = on => {
       return { done, total: list.length, isAllDone: list.length > 0 && done === list.length }
     }
 
-    const agentRow = (a: TrackedAgent, depth = 0): unknown => (
+    // This session's own subagent opens its conversation in the main view when pressed.
+    const openAgent = (id: string) => () => {
+      void $.ui
+        .view({ agentId: id })
+        .then(shown => {
+          if (shown.deny) $.ui.toast(shown.deny)
+        })
+        .catch(() => {})
+    }
+    const agentRow = (a: TrackedAgent, depth = 0, isOwn = false): unknown => {
+      const stalled = isStalled(a, t)
+      const name = (
+        <Text weight="medium" color={isLive(a) ? 'text' : 'inactive'} wrap="truncate-end">
+          {a.description || w.noDescription}
+        </Text>
+      )
+      return (
       <Box key={a.id} flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" gap={1}>
           <Box flexDirection="row" flexShrink={1}>
-            {iconCell(AGENT_ICON[a.status], COLOR[a.status], a.status === 'completed')}
-            <Text weight="medium" color={isLive(a) ? 'text' : 'inactive'} wrap="truncate-end">
-              {a.description || w.noDescription}
-            </Text>
+            {iconCell(stalled ? '⚠' : AGENT_ICON[a.status], stalled ? 'warning' : COLOR[a.status], a.status === 'completed')}
+            {isOwn && !a.vendor ? (
+              <Button key={`btn-open-${a.id}`} plain hover={{ color: 'claude' }} onPress={openAgent(a.id)}>
+                {name}
+              </Button>
+            ) : (
+              name
+            )}
           </Box>
-          <Text size="caption" color="subtle">
-            {clockTime((a.endedAt ?? Math.max(t, a.startedAt)) - a.startedAt)}
+          <Text size="caption" color={stalled ? 'warning' : 'subtle'}>
+            {stalled ? w.quietFor(clockTime(quietMs(a, t))) : clockTime((a.endedAt ?? Math.max(t, a.startedAt)) - a.startedAt)}
           </Text>
         </Box>
         <Box paddingLeft={2}>
@@ -1061,11 +1197,12 @@ export const register: Register = on => {
         )}
         {depth < 3 && (childrenOf.get(a.id) ?? []).length > 0 && (
           <Box paddingLeft={2} flexDirection="column">
-            {(childrenOf.get(a.id) ?? []).map(c => agentRow(c, depth + 1) as never)}
+            {(childrenOf.get(a.id) ?? []).map(c => agentRow(c, depth + 1, isOwn) as never)}
           </Box>
         )}
       </Box>
-    )
+      )
+    }
     let agentSkillsOf = new Map<string, TrackedSkill[]>()
     let childrenOf = new Map<string, TrackedAgent[]>()
     const withSkillsOf = (snap: SessionSnapshot) => {
@@ -1129,13 +1266,13 @@ export const register: Register = on => {
           {withLabel && live.length > 0 && sectionLabel(w.subagentsCount(live.length))}
           {live.length > 0 && (
             <Box flexDirection="column" paddingLeft={withLabel ? 2 : 0}>
-              {live.map(a => agentRow(a) as never)}
+              {live.map(a => agentRow(a, 0, withLabel) as never)}
             </Box>
           )}
           {done.length > 0 && foldRow(doneKey, doneOpen, w.finishedSubagents(done.length))}
           {doneOpen && (
             <Box flexDirection="column" paddingLeft={2}>
-              {done.slice(0, 10).map(a => agentRow(a) as never)}
+              {done.slice(0, 10).map(a => agentRow(a, 0, withLabel) as never)}
             </Box>
           )}
         </Box>
@@ -1173,15 +1310,8 @@ export const register: Register = on => {
       )
     }
 
-    const nameOf = (snap: SessionSnapshot) => snap.title || topicFrom(snap.topic ?? '', 60) || w.untitled
-    // A prompt that waits a moment is the person's to answer (auto mode settles
-    // its own asks in well under that); a session waiting outranks working.
-    const stateOf = (snap: SessionSnapshot): SessionState =>
-      snap.waitingAt && t - snap.waitingAt >= WAIT_SHOWN_MS
-        ? 'waiting'
-        : snap.agents.some(isLive) || snap.plan.some(st => st.status === 'in_progress')
-          ? 'working'
-          : 'idle'
+    const nameOf = nameOfSession
+    const stateOf = (snap: SessionSnapshot) => stateOfSession(snap, t)
 
     // Another session's header: the fold triangle, its name, its plan's count;
     // folded, its current step and how many agents run under it.
@@ -1206,11 +1336,7 @@ export const register: Register = on => {
                   {w.waitingForYou}
                 </Text>
               )}
-              {prefs.tokens && !!snap.contextTokens && (
-                <Text size="caption" color="subtle">
-                  {w.inContext(snap.contextTokens)}
-                </Text>
-              )}
+              {contextLabel(snap)}
               {show.plans && total > 0 && (
                 <Text size="caption" color={isAllDone ? 'success' : 'subtle'}>
                   {done}/{total}
@@ -1293,7 +1419,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {picture(
-                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap), t),
+                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap), t, snap.contextPercent),
                 nameOf(snap),
                 `head-${snap.sessionId}`,
               )}
@@ -1392,10 +1518,9 @@ export const register: Register = on => {
                 {w.waitingForYou}
               </Text>
             )}
+            {contextLabel(mine)}
             <Text size="caption" color="subtle">
-              {[prefs.tokens && mine.contextTokens ? w.inContext(mine.contextTokens) : '', w.thisSession]
-                .filter(Boolean)
-                .join(' · ')}
+              {w.thisSession}
             </Text>
           </Box>
         </Box>

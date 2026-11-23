@@ -61,6 +61,15 @@ export type Words = {
   tokens: (n: number) => string
   inContext: (n: number) => string
   waitingForYou: string
+  // attention
+  contextFull: (percent: number) => string
+  quietFor: (time: string) => string
+  quietTip: string
+  waitsToast: (name: string) => string
+  statusLine: (working: number, waiting: number) => string
+  notifyWhenWaiting: string
+  countInStatusLine: string
+  openAgentHint: string
 }
 
 const en: Words = {
@@ -126,6 +135,20 @@ const en: Words = {
   tokens: n => `${shortCount(n)} tokens`,
   inContext: n => `${shortCount(n)} in context`,
   waitingForYou: '● waiting for you',
+  contextFull: p => `${p}% full`,
+  quietFor: time => `⚠ quiet ${time}`,
+  quietTip: 'No tool calls for a while: it may be stuck.',
+  waitsToast: name => `“${name}” is waiting for your answer`,
+  statusLine: (working, waiting) =>
+    [
+      working ? `◐ ${working} ${enPlural(working, 'session', 'sessions')} working` : '',
+      waiting ? `● ${waiting} waiting for you` : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  notifyWhenWaiting: 'Notify when a session waits for me',
+  countInStatusLine: 'Sessions at work in the status line',
+  openAgentHint: 'Open its conversation',
 }
 
 /** 950 → «950», 142 812 → «142.8k», 1 520 000 → «1.52M». */
