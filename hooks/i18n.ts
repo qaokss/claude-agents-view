@@ -63,6 +63,7 @@ export type Words = {
   waitingForYou: string
   // attention
   contextFull: (percent: number) => string
+  compactsAt: (tokens: number) => string
   quietFor: (time: string) => string
   quietTip: string
   waitsToast: (name: string) => string
@@ -136,6 +137,7 @@ const en: Words = {
   inContext: n => `${shortCount(n)} in context`,
   waitingForYou: '● waiting for you',
   contextFull: p => `${p}% full`,
+  compactsAt: n => `compacts at ${shortCount(n)}`,
   quietFor: time => `⚠ quiet ${time}`,
   quietTip: 'No tool calls for a while: it may be stuck.',
   waitsToast: name => `“${name}” is waiting for your answer`,

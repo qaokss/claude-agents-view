@@ -401,7 +401,12 @@ test('skills show in the list, and filters hide each kind', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: /^docx/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^×2$/ })).toBeTruthy()
+  // the filters sit in the ⚙ card
+  expect(await ui.find({ type: 'Text', text: /☑ Skills/ })).toBeFalsy()
+  await ui.press({ key: 'btn-settings' })
+  expect(await ui.find({ type: 'Text', text: /☑ Skills/ })).toBeTruthy()
   await ui.press({ key: 'btn-show-skills' })
+  expect(await ui.find({ type: 'Text', text: /☐ Skills/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /^docx/ })).toBeFalsy()
   await ui.press({ key: 'btn-show-plans' })
   expect(await ui.find({ type: 'Text', text: /Plan ·/ })).toBeFalsy()
@@ -492,9 +497,9 @@ test('subagent tokens and the session context show, and settings hide them', asy
   expect(svg).toContain('152.4k in context')
 
   await ui.press({ key: 'btn-settings' })
-  expect(await ui.find({ type: 'Text', text: /● Token usage/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /☑ Token usage/ })).toBeTruthy()
   await ui.press({ key: 'btn-set-tokens' })
-  expect(await ui.find({ type: 'Text', text: /○ Token usage/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /☐ Token usage/ })).toBeTruthy()
   expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).not.toContain('tokens')
   await ui.press({ key: 'btn-view-list' })
   expect(await ui.find({ type: 'Text', text: /tokens/ })).toBeFalsy()
@@ -875,6 +880,37 @@ test('a nearly full context is flagged', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /172\.0k in context · 86% full/ })).toBeTruthy()
   await ui.press({ key: 'btn-view-graph' })
   expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).toMatch(/warntext[^<]*>172\.0k in context · 86% full/)
+  await ui.unmount()
+})
+
+test('with auto-compaction on, the warning counts down to it', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let tokens = 140_000
+  on('agent.list', () => ({ value: [] }))
+  on('session.usage', (_, e) => ({ value: {
+    startedAt: 0,
+    context: {
+      tokens, window: 200_000, percent: Math.round(tokens / 2000),
+      ...((e as { breakdown?: string }).breakdown ? { breakdown: { isAutoCompactEnabled: true, autoCompactThreshold: 167_000 } as never } : {}),
+    },
+    rateLimits: [],
+  } }))
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /^140\.0k in context$/ })).toBeTruthy()
+  await ui.unmount()
+
+  // 145k is within 15% of 167k: amber, and where it compacts, even under 80% of the window
+  tokens = 145_000
+  await clock.advance(1_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /145\.0k in context · compacts at 167\.0k/ })).toBeTruthy()
+  await ui.press({ key: 'btn-view-graph' })
+  expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).toMatch(/warntext[^<]*>145\.0k in context · compacts at 167\.0k/)
   await ui.unmount()
 })
 

@@ -42,8 +42,15 @@ export const stepTime = (st: PlanStep, now: number) =>
     ? ''
     : clockTime((st.status === 'completed' ? st.endedAt! : Math.max(now, st.startedAt)) - st.startedAt)
 
-// The context is nearly full from here on.
+// The context is nearly full: within 15% of the point where auto-compaction
+// runs, or, with it off or not known, past 80% of the model's window.
 export const CONTEXT_WARN_PERCENT = 80
+export const COMPACT_WARN_SHARE = 0.85
+export const contextWarning = (tokens: number | undefined, percent: number | undefined, compactAt: number | undefined, w: Words) => {
+  if (!tokens) return ''
+  if (compactAt) return tokens >= compactAt * COMPACT_WARN_SHARE ? w.compactsAt(compactAt) : ''
+  return (percent ?? 0) >= CONTEXT_WARN_PERCENT ? w.contextFull(percent!) : ''
+}
 
 const STATUS_CLASS: Record<AgentStatusWord, string> = {
   pending: 'idle',
@@ -578,14 +585,16 @@ export const headerPicture = (
   state: SessionState = liveCount > 0 ? 'working' : 'idle',
   now = 0,
   contextPercent?: number,
+  compactAt?: number,
 ): Picture => {
   const W = Math.max(200, Math.round(width))
   const FRAME_H = 38
   const H = isOpen ? 48 : 40
   const done = plan.filter(s => s.status === 'completed').length
   const count = show.plans && plan.length > 0 ? `${done}/${plan.length}` : ''
-  const isFull = !!contextTokens && (contextPercent ?? 0) >= CONTEXT_WARN_PERCENT
-  const ctxLabel = contextTokens ? `${w.inContext(contextTokens)}${isFull ? ` · ${w.contextFull(contextPercent!)}` : ''}` : ''
+  const warning = contextWarning(contextTokens, contextPercent, compactAt, w)
+  const isFull = !!warning
+  const ctxLabel = contextTokens ? `${w.inContext(contextTokens)}${warning ? ` · ${warning}` : ''}` : ''
   const ctxX = W - 14 - (count ? count.length * 8 + 12 : 0)
   const rightW = (count ? count.length * 8 + 14 : 0) + (ctxLabel ? ctxLabel.length * 6.2 + 12 : 0)
   const nameChars = Math.floor((W - 28 - rightW) / 8.2)

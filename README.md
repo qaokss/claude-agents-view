@@ -19,9 +19,9 @@
 - **Heads-up outside the pane.** When another session starts waiting for you, a toast says so; the status line under the prompt counts the other sessions at work (`◐ 2 sessions working · ● 1 waiting for you`). Both can be turned off under ⚙.
 - **Stuck subagents stand out.** A running subagent that hasn't called a tool for 3 minutes turns amber and says how long it has been quiet (`⚠ quiet 4:10`).
 - **Time per step.** Each plan step shows how long it took, or has taken so far.
-- **A full context warns you.** Past 80% of the model's window the session's context count turns amber and shows the share (`172k in context · 86% full`).
+- **A filling context warns you.** Within 15% of the point where Claude Code auto-compacts, the session's context count turns amber and says where that is (`145k in context · compacts at 167k`). With auto-compaction off, it warns past 80% of the model's window instead (`172k in context · 86% full`).
 - **Open a subagent from the list.** Press one of this session's subagents in the list view to open its conversation in the main view.
-- **Filters.** `● Plans ● Agents ● Skills` — turn any of them off. With plans off the graph becomes a timeline.
+- **Filters and settings under ⚙.** `☑ Plans ☑ Agents ☑ Skills` — turn any of them off; with plans off the graph becomes a timeline. Token counts, the toast and the status line count are switched there too.
 - **All-time statistics.** Which skills and subagent types you use most, counted from every transcript on your machine.
 
 <table>
@@ -38,8 +38,9 @@
 - **A toast when another session waits for you**, and a count of working and waiting sessions in the status line.
 - **Stuck subagents** are marked after 3 minutes without a tool call.
 - **Time per plan step**, finished or running.
-- **A nearly full context** (80% and up) is flagged in amber.
+- **A filling context** is flagged in amber as it nears auto-compaction.
 - **Press a subagent in the list** to open its conversation.
+- **Filters moved under ⚙**, and every switch there is a checkbox.
 
 ## What's new in 0.4
 

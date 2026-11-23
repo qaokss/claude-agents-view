@@ -14,7 +14,7 @@ import type {
   TrackedSkill,
   UsageStats,
 } from '../types'
-import { CONTEXT_WARN_PERCENT, assignAgents, bodyPicture, earlierPicture, groupDigits, isStalled, quietMs, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill, stepTime } from './graph'
+import { assignAgents, contextWarning, bodyPicture, earlierPicture, groupDigits, isStalled, quietMs, splitLoose, headerPicture, planPicture, rankingPicture, shortSkill, stepTime } from './graph'
 import type { Picture, SessionState, Show } from './graph'
 import { WORDS } from './i18n'
 import { VENDOR_NAME, isFollowed, pollRuns, runDir, vendorOf } from './external'
@@ -66,6 +66,8 @@ const settings = atom({ plugin: 'subagents-pane', key: 'settings' } as const, DE
 const context = atom({ plugin: 'subagents-pane', key: 'context' } as const, 0)
 // That context as a share of the model's window, 0 to 100.
 const contextPercent = atom({ plugin: 'subagents-pane', key: 'contextPercent' } as const, 0)
+// The token count at which auto-compaction runs (0: off, or not known yet).
+const compactAt = atom({ plugin: 'subagents-pane', key: 'compactAt' } as const, 0)
 // Codex and Gemini runs Claude started through Bash, followed by their logs.
 const runs = atom({ plugin: 'subagents-pane', key: 'runs' } as const, [], { shape: 'runs-1' })
 const RUNS_MAX = 30
@@ -349,6 +351,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     updatedAt: t,
     ...((await read($, context)) > 0 ? { contextTokens: await read($, context) } : {}),
     ...((await read($, contextPercent)) > 0 ? { contextPercent: await read($, contextPercent) } : {}),
+    ...((await read($, compactAt)) > 0 ? { compactAt: await read($, compactAt) } : {}),
     ...((await read($, turnAt)) > 0 ? { turnAt: await read($, turnAt) } : {}),
     ...((await read($, waitingAt)) > 0 ? { waitingAt: await read($, waitingAt) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
@@ -450,6 +453,19 @@ const readContext = async ($: EngineInterface) => {
   if (percent !== (await read($, contextPercent))) await update($, contextPercent, () => percent)
 }
 
+// Where auto-compaction runs: the /context breakdown, estimated locally (no
+// API call), read once a minute since it changes only with the model or settings.
+const COMPACT_EVERY_MS = 60_000
+let lastCompactRead = -Infinity
+const readCompactAt = async ($: EngineInterface, t: number) => {
+  if (t - lastCompactRead < COMPACT_EVERY_MS) return
+  lastCompactRead = t
+  const b = (await $.session.usage({ breakdown: 'summary' })).context.breakdown
+  if (!b) return
+  const at = b.isAutoCompactEnabled ? (b.autoCompactThreshold ?? 0) : 0
+  if (at !== (await read($, compactAt))) await update($, compactAt, () => at)
+}
+
 // Reads the logs of the Codex and Gemini runs still followed, every few
 // seconds, and writes their cards (and their own agents' cards) into the list.
 const RUNS_EVERY_MS = 3_000
@@ -544,6 +560,7 @@ const markWaiting = async ($: EngineInterface) => {
 const tick = async ($: EngineInterface) => {
   await sync($).catch(() => {})
   await readContext($).catch(() => {})
+  await readCompactAt($, await $.clock.now()).catch(() => {})
   await followRuns($, await $.clock.now()).catch(() => {})
   const t = await $.clock.now()
   await refreshTitle($, t).catch(() => {})
@@ -895,12 +912,49 @@ export const register: Register = on => {
         </Box>
       )
     }
+    // Filters and settings are switches anyone reads as such: checkboxes.
+    const checkbox = (isOn: boolean) => (isOn ? '☑' : '☐')
+    // Filters: several may be on, so checkboxes, not segments.
+    const filter = (key: keyof Show, label: string) => (
+      <Button
+        key={`btn-show-${key}`}
+        plain
+        dimColor={!show[key]}
+        hover={{ color: 'text' }}
+        onPress={() => void update($, shownAtom, cur => ({ ...cur, [key]: !cur[key] }))}
+      >
+        <Text size="footnote">
+          {checkbox(show[key])} {label}
+        </Text>
+      </Button>
+    )
+    const allHidden = !show.plans && !show.agents && !show.skills
+    // Filters live in the ⚙ card, as a row of their own above the other settings.
+    const filterRow = (
+      <Box key="filters" flexDirection="column">
+        <Box flexDirection="row" gap={2} alignItems="center">
+          <Text size="caption" color="subtle">
+            {w.show}
+          </Text>
+          {filter('plans', w.plans)}
+          {filter('agents', w.agents)}
+          {filter('skills', w.skills)}
+        </Box>
+        {allHidden && (
+          <Text size="caption" color="subtle">
+            {w.allHidden}
+          </Text>
+        )}
+      </Box>
+    )
+
     const settingsOpen = isOpen(f, 'settings', false)
     const settingsCard = settingsOpen ? (
       <Box key="settings-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
         <Text size="caption" color="subtle">
           {w.settings}
         </Text>
+        {filterRow}
         <Button
           key="btn-set-tokens"
           plain
@@ -909,7 +963,7 @@ export const register: Register = on => {
           onPress={() => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens }))}
         >
           <Text size="footnote">
-            {prefs.tokens ? '●' : '○'} {w.showTokens}
+            {checkbox(prefs.tokens)} {w.showTokens}
           </Text>
         </Button>
         <Button
@@ -920,7 +974,7 @@ export const register: Register = on => {
           onPress={() => void update($, settings, cur => ({ ...cur, notify: cur.notify === false }))}
         >
           <Text size="footnote">
-            {prefs.notify !== false ? '●' : '○'} {w.notifyWhenWaiting}
+            {checkbox(prefs.notify !== false)} {w.notifyWhenWaiting}
           </Text>
         </Button>
         <Button
@@ -931,7 +985,7 @@ export const register: Register = on => {
           onPress={() => void update($, settings, cur => ({ ...cur, statusLine: cur.statusLine === false }))}
         >
           <Text size="footnote">
-            {prefs.statusLine !== false ? '●' : '○'} {w.countInStatusLine}
+            {checkbox(prefs.statusLine !== false)} {w.countInStatusLine}
           </Text>
         </Button>
       </Box>
@@ -939,11 +993,11 @@ export const register: Register = on => {
     // The context label, warning-coloured once the window is nearly full.
     const contextLabel = (snap: SessionSnapshot) => {
       if (!prefs.tokens || !snap.contextTokens) return null
-      const isFull = (snap.contextPercent ?? 0) >= CONTEXT_WARN_PERCENT
+      const warning = contextWarning(snap.contextTokens, snap.contextPercent, snap.compactAt, w)
       return (
-        <Text size="caption" color={isFull ? 'warning' : 'subtle'}>
+        <Text size="caption" color={warning ? 'warning' : 'subtle'}>
           {w.inContext(snap.contextTokens)}
-          {isFull ? ` · ${w.contextFull(snap.contextPercent!)}` : ''}
+          {warning ? ` · ${warning}` : ''}
         </Text>
       )
     }
@@ -965,7 +1019,7 @@ export const register: Register = on => {
               hover={{ color: 'text' }}
               onPress={() => void update($, fold, cur => setOpen(cur, 'settings', !settingsOpen))}
             >
-              <Text size="footnote">⚙</Text>
+              <Text size="heading">⚙</Text>
             </Button>
           </Box>
           {canGraph && (
@@ -981,39 +1035,6 @@ export const register: Register = on => {
     const toggle = (key: string, open: boolean) => () => {
       void update($, fold, cur => setOpen(cur, key, open))
     }
-    // Filters: several may be on, so plain toggles with ●/○, not segments.
-    const filter = (key: keyof Show, label: string) => (
-      <Button
-        key={`btn-show-${key}`}
-        plain
-        dimColor={!show[key]}
-        hover={{ color: 'text' }}
-        onPress={() => void update($, shownAtom, cur => ({ ...cur, [key]: !cur[key] }))}
-      >
-        <Text size="footnote">
-          {show[key] ? '●' : '○'} {label}
-        </Text>
-      </Button>
-    )
-    const allHidden = !show.plans && !show.agents && !show.skills
-    const filterRow = (
-      <Box key="filters" flexDirection="column" paddingX={1}>
-        <Box flexDirection="row" gap={2} alignItems="center">
-          <Text size="caption" color="subtle">
-            {w.show}
-          </Text>
-          {filter('plans', w.plans)}
-          {filter('agents', w.agents)}
-          {filter('skills', w.skills)}
-        </Box>
-        {allHidden && (
-          <Text size="caption" color="subtle">
-            {w.allHidden}
-          </Text>
-        )}
-      </Box>
-    )
-
     // One fold control everywhere: a quiet line, the triangle on the left.
     const foldRow = (key: string, open: boolean, label: string) => (
       <Button key={`btn-${key}`} plain onPress={toggle(key, !open)}>
@@ -1419,7 +1440,7 @@ export const register: Register = on => {
                 </Button>
               </Box>
               {picture(
-                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap), t, snap.contextPercent),
+                headerPicture(nameOf(snap), snap.plan, isOwn, sOpen && !body.isEmpty, liveHere, px, show, w, prefs.tokens ? snap.contextTokens : undefined, stateOf(snap), t, snap.contextPercent, snap.compactAt),
                 nameOf(snap),
                 `head-${snap.sessionId}`,
               )}
@@ -1475,7 +1496,6 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1} minHeight={fullHeight}>
           {switchRow}
           {settingsCard}
-          {filterRow}
           {sessionGraph(mine, true)}
           {othersHeading}
           {rest.map(snap => sessionGraph(snap, false))}
@@ -1561,7 +1581,6 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1} minHeight={fullHeight}>
         {switchRow}
         {settingsCard}
-        {filterRow}
         {ownBlock}
         {othersHeading}
         {rest.map(otherBlock)}
