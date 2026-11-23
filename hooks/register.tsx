@@ -125,6 +125,18 @@ const oneLine = (s: string, max: number) => {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat
 }
 
+// Text the app wraps around a prompt (reminders, notices) is not what the person
+// typed, so it never names a session. Applied when the topic is taken and when it
+// is drawn, since older versions stored it as is.
+const HARNESS_TAG = String.raw`(?:system-reminder|task-notification|side-sessions-event|ci-monitor-event|local-command-[\w-]+|command-[\w-]+|ide_[\w-]+)`
+const topicFrom = (s: string, max: number) => {
+  const text = s
+    .replace(new RegExp(String.raw`<(${HARNESS_TAG})\b[^>]*>[\s\S]*?</\1>`, 'g'), ' ')
+    .replace(new RegExp(String.raw`<${HARNESS_TAG}\b[\s\S]*$`), ' ')
+    .replace(/<\/?[a-zA-Z][\w-]*[^>]*>/g, ' ')
+  return oneLine(text, max)
+}
+
 // 2:14, or 1:02:14 past the hour.
 const clockTime = (ms: number) => {
   const s = Math.max(0, Math.round(ms / 1000))
@@ -529,9 +541,8 @@ export const register: Register = on => {
     }
     try {
       const me = await read($, self)
-      if (!me.topic && e.text.trim()) {
-        await update($, self, m => ({ ...m, topic: oneLine(e.text, 60) }))
-      }
+      const topic = topicFrom(me.topic, 60) ? '' : topicFrom(e.text, 60)
+      if (topic) await update($, self, m => ({ ...m, topic }))
     } catch {
       // the topic is a label only
     }
@@ -1162,7 +1173,7 @@ export const register: Register = on => {
       )
     }
 
-    const nameOf = (snap: SessionSnapshot) => snap.title || snap.topic || w.untitled
+    const nameOf = (snap: SessionSnapshot) => snap.title || topicFrom(snap.topic ?? '', 60) || w.untitled
     // A prompt that waits a moment is the person's to answer (auto mode settles
     // its own asks in well under that); a session waiting outranks working.
     const stateOf = (snap: SessionSnapshot): SessionState =>

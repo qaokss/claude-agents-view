@@ -205,6 +205,40 @@ test('another session is named by its chat title even if it sent none', async ($
   await ui.unmount()
 })
 
+test('text the app wraps around a prompt never names a session', async ($, on) => {
+  const clock = mock.clock(on, { now: 5_000_000 })
+  const other = {
+    sessionId: 'other-1', folder: 'spare', topic: '<system-reminder> Codebase and user instructions are sh…',
+    plan: [{ content: 'Busy step', status: 'in_progress' }], agents: [], updatedAt: 4_999_000,
+  }
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => ({ value: !String((e as { path?: string }).path).includes('/.claude/projects') }))
+  on('fs.list', (_, e) => {
+    const path = (e as { path?: string }).path ?? ''
+    return { value: path.endsWith('/.claude/projects')
+      ? []
+      : [{ name: 'other-1.json', kind: 'file', size: 1, mtimeMs: 4_999_000, isLink: false }] }
+  })
+  on('fs.read', () => ({ value: JSON.stringify(other) }))
+  on('prompt.submit', (_, e) => ({ text: (e as { text: string }).text }))
+
+  await $.session.start({ cwd: '/x', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: '<system-reminder>\nYou are in auto mode.\n</system-reminder>\nFix the login form' } as never)
+  await clock.advance(1_000)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const shown = JSON.stringify([await ui.findAll({ type: 'Svg' }), await ui.findAll({ type: 'Text' })])
+  expect(shown).not.toMatch(/system-reminder|auto mode/)
+  expect(shown).toMatch(/Untitled session/)
+  await ui.unmount()
+})
+
 test('the view button switches the pane to a graph on desktop', async ($, on) => {
   mock.clock(on)
   on('agent.list', () => ({ value: [] }))
