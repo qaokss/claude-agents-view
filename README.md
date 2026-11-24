@@ -3,7 +3,7 @@
 **A live side pane for Claude Code that shows what your agents are doing** — the plan each session is working through, the subagents it spawned, the skills it called and the tools they use — across every open session, as a list or as a graph.
 
 <p align="center">
-  <img src="docs/graph-demo.gif" width="490" alt="Graph view in action: a session works through a four-step plan; subagent cards appear under the step they were spawned from with their token counts, a Codex run brings its own agent, a Gemini run drafts the docs, skills light up as pills, and steps turn green as they finish">
+  <img src="https://raw.githubusercontent.com/qaokss/claude-agents-view/media/graph-demo.gif" width="490" alt="Graph view in action: a session works through a four-step plan; subagent cards appear under the step they were spawned from with their token counts, a Codex run brings its own agent, a Gemini run drafts the docs, skills light up as pills, and steps turn green as they finish">
 </p>
 
 ## What you get
@@ -39,7 +39,7 @@
 ## What's new in 0.7
 
 <p align="center">
-  <img src="docs/whats-new-0.7.gif" width="520" alt="Four short scenes: a finished plan moves to past plans when the user writes again, and the session shows what it is doing now; every plan step has a time; a button under the prompt brings the pane in front of the browser; step times switched off under the gear">
+  <img src="https://raw.githubusercontent.com/qaokss/claude-agents-view/media/whats-new-0.7.gif" width="520" alt="Four short scenes: a finished plan moves to past plans when the user writes again, and the session shows what it is doing now; every plan step has a time; a button under the prompt brings the pane in front of the browser; step times switched off under the gear">
 </p>
 
 - **What a session is doing now**, while no plan step is under way; a finished plan moves to *Past plans* once you write again.
@@ -57,7 +57,7 @@
 ## What's new in 0.5
 
 <p align="center">
-  <img src="docs/whats-new-0.5.gif" width="520" alt="Six short scenes: plan steps with their times; a subagent quiet for three minutes turning amber; the context count turning amber as it nears auto-compaction; another session starting to wait, with a toast; pressing a subagent in the list to open its conversation; the settings card under the gear with checkboxes">
+  <img src="https://raw.githubusercontent.com/qaokss/claude-agents-view/media/whats-new-0.5.gif" width="520" alt="Six short scenes: plan steps with their times; a subagent quiet for three minutes turning amber; the context count turning amber as it nears auto-compaction; another session starting to wait, with a toast; pressing a subagent in the list to open its conversation; the settings card under the gear with checkboxes">
 </p>
 
 - **A toast when another session waits for you.**
@@ -71,7 +71,7 @@
 ## What's new in 0.4
 
 <p align="center">
-  <img src="docs/working-states.gif" width="460" alt="Four session headers: two at work with a glint sweeping along the bottom edge, one waiting on the user knocking, one idle">
+  <img src="https://raw.githubusercontent.com/qaokss/claude-agents-view/media/working-states.gif" width="460" alt="Four session headers: two at work with a glint sweeping along the bottom edge, one waiting on the user knocking, one idle">
 </p>
 
 - **Working sessions glint.** A soft glint sweeps along the bottom of every session at work.
