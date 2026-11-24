@@ -68,9 +68,7 @@ export type Words = {
   quietFor: (time: string) => string
   quietTip: string
   waitsToast: (name: string) => string
-  statusLine: (working: number, waiting: number) => string
   notifyWhenWaiting: string
-  countInStatusLine: string
   openAgentHint: string
 }
 
@@ -143,15 +141,7 @@ const en: Words = {
   quietFor: time => `⚠ quiet ${time}`,
   quietTip: 'No tool calls for a while: it may be stuck.',
   waitsToast: name => `“${name}” is waiting for your answer`,
-  statusLine: (working, waiting) =>
-    [
-      working ? `◐ ${working} ${enPlural(working, 'session', 'sessions')} working` : '',
-      waiting ? `● ${waiting} waiting for you` : '',
-    ]
-      .filter(Boolean)
-      .join(' · '),
   notifyWhenWaiting: 'Notify when a session waits for me',
-  countInStatusLine: 'Count busy sessions under the prompt',
   openAgentHint: 'Open its conversation',
 }
 

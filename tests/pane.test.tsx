@@ -914,7 +914,7 @@ test('with auto-compaction on, the warning counts down to it', async ($, on) => 
   await ui.unmount()
 })
 
-test('another session waiting raises a toast once, and the status line counts sessions', async ($, on) => {
+test('another session waiting raises a toast once, and nothing goes to the status line', async ($, on) => {
   const clock = mock.clock(on, { now: 5_000_000 })
   const snap = (id: string, extra: object) => ({
     sessionId: id, title: id === 'w1' ? 'Landing page' : 'Refactor', folder: 'x', topic: '',
@@ -951,17 +951,82 @@ test('another session waiting raises a toast once, and the status line counts se
   await clock.advance(1_000)
   await clock.advance(1_000)
   expect(toasts).toEqual(['“Landing page” is waiting for your answer'])
-  expect(lines.at(-1)).toBe('◐ 1 session working · ● 1 waiting for you')
+  expect(lines.every(l => l === undefined)).toBe(true)
 
-  // switched off in settings: no line, and no toast for the next wait
+  // switched off in settings: no toast for the next wait
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'btn-settings' })
-  await ui.press({ key: 'btn-set-status' })
   await ui.press({ key: 'btn-set-notify' })
   await ui.unmount()
   files['w1.json'] = snap('w1', { waitingAt: 5_001_500 })
   await clock.advance(1_000)
   await clock.advance(2_000)
   expect(toasts).toHaveLength(1)
-  expect(lines.at(-1)).toBeUndefined()
+  expect(lines.every(l => l === undefined)).toBe(true)
+})
+
+test('after the app restarts a session, its plan and subagents come back from its last snapshot', async ($, on) => {
+  mock.clock(on, { now: 9_000_000 })
+  const dir = '/home/u/.claude/mods-data/subagents-pane/sessions'
+  const saved = {
+    sessionId: 'me-1', title: 'Payments', folder: 'x', topic: '', updatedAt: 8_000_000, isEnded: true, history: [], skills: [],
+    plan: [{ content: 'Extract the service', status: 'in_progress', startedAt: 7_000_000 }],
+    agents: [
+      { id: 'a1', description: 'Move the calls', type: 'general-purpose', prompt: '', status: 'running', startedAt: 7_500_000, toolCalls: 4 },
+      { id: 'a2', description: 'Read the tests', type: 'Explore', prompt: '', status: 'completed', startedAt: 7_100_000, endedAt: 7_200_000, toolCalls: 2 },
+    ],
+  }
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => ({ value: String((e as { path?: string }).path) === `${dir}/me-1.json` }))
+  on('fs.read', () => ({ value: JSON.stringify(saved) }))
+  on('fs.list', () => ({ value: [] }))
+
+  await $.session.start({ cwd: '/x', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Extract the service/ })).toBeTruthy()
+  // the one that was running did not survive the restart: both are finished now
+  expect(await ui.find({ type: 'Text', text: /Finished subagents \(2\)/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /running/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('with its snapshot already empty, a session replays its plan from its transcript', async ($, on) => {
+  mock.clock(on, { now: 9_000_000 })
+  const tool = (name: string, input: object, ts: string) =>
+    JSON.stringify({ type: 'assistant', isSidechain: false, timestamp: ts, message: { content: [{ type: 'tool_use', name, input }] } })
+  const lines = [
+    tool('mcp__ccd_turn__update_plan', { items: [{ content: 'Old step', status: 'in_progress' }] }, '2026-11-20T10:00:00Z'),
+    tool('mcp__ccd_turn__wrap_up', { recap: 'done' }, '2026-11-20T10:05:00Z'),
+    tool('mcp__ccd_turn__update_plan', { items: [{ content: 'Write the brief', status: 'in_progress' }, { content: 'Send it', status: 'pending' }] }, '2026-11-20T11:00:00Z'),
+    JSON.stringify({ type: 'assistant', isSidechain: true, message: { content: [{ type: 'tool_use', name: 'mcp__ccd_turn__update_plan', input: { advance: true } }] } }),
+    tool('mcp__ccd_turn__update_plan', { advance: true }, '2026-11-20T11:03:00Z'),
+  ].join('\n')
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', (_, e) => {
+    const path = String((e as { path?: string }).path)
+    return { value: path === '/home/u/.claude/projects' || path === '/home/u/.claude/projects/-x/me-1.jsonl' }
+  })
+  on('fs.list', (_, e) => ({
+    value: String((e as { path?: string }).path).endsWith('/projects') ? [{ name: '-x', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] : [],
+  }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: lines, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+
+  await $.session.start({ cwd: '/x', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Send it/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /3:00/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Past plans \(1\)/ })).toBeTruthy()
+  await ui.unmount()
 })

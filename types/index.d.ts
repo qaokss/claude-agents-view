@@ -89,6 +89,8 @@ export type SessionSnapshot = {
   contextTokens?: number
   /** That context as a share of the model's window, 0 to 100. */
   contextPercent?: number
+  /** The token count at which auto-compaction runs; absent when it is off or not known yet. */
+  compactAt?: number
   /** When the latest user message or plan began; finished agents from before it fold away in the graph. */
   turnAt?: number
   /** Since when a permission prompt or a question has waited on the user; absent when nothing does. */
@@ -107,8 +109,6 @@ export type PaneSettings = {
   tokens: boolean
   /** A toast when another session starts waiting on the user; absent counts as on. */
   notify?: boolean
-  /** Working and waiting sessions counted in the status line; absent counts as on. */
-  statusLine?: boolean
 }
 
 /** What the viewer folded or unfolded; keys are `plan:<id>`, `done:<id>`, `session:<id>`. */
@@ -134,6 +134,7 @@ declare module 'claude-code' {
       settings: Shaped<PaneSettings>
       context: number
       contextPercent: number
+      compactAt: number
       runs: Shaped<ExternalRun[]>
       turnAt: number
       waitingAt: number

@@ -411,6 +411,72 @@ const readStats = async ($: EngineInterface, t: number) => {
   if (JSON.stringify(before) !== JSON.stringify(sum)) await update($, stats, () => sum)
 }
 
+// The app restarts a session's process with empty state: take back what this
+// session last published. Subagents still marked live did not survive it.
+const restore = async ($: EngineInterface, sessionId: string) => {
+  if ((await read($, plan)).length || (await read($, agents)).length) return
+  const path = `${await sharedDir($)}/${sessionId}.json`
+  if (!(await $.fs.exists(path))) return
+  let snap: SessionSnapshot
+  try {
+    snap = JSON.parse(await $.fs.read(path)) as SessionSnapshot
+  } catch {
+    return
+  }
+  if (snap.sessionId !== sessionId) return
+  const at = snap.updatedAt || 0
+  await update($, plan, () => snap.plan ?? [])
+  await update($, history, () => snap.history ?? [])
+  await update($, skills, () => snap.skills ?? [])
+  await update($, agents, () =>
+    (snap.agents ?? []).map(a => (isLive(a) ? { ...a, status: 'killed' as const, endedAt: a.endedAt ?? at, busy: 0 } : a)),
+  )
+  await update($, self, me => ({ ...me, title: me.title || snap.title || '', topic: me.topic || snap.topic || '' }))
+}
+
+// A session whose snapshot was already overwritten empty: replay its plan
+// calls from its transcript, `<projects>/<folder>/<sessionId>.jsonl`.
+const restorePlanFromTranscript = async ($: EngineInterface, sessionId: string) => {
+  if ((await read($, plan)).length) return
+  const home = await $.env.get('HOME')
+  const projects = `${home ?? ''}/.claude/projects`
+  if (!(await $.fs.exists(projects))) return
+  let file = ''
+  for (const dir of await $.fs.list(projects)) {
+    if (dir.kind !== 'dir') continue
+    const candidate = `${projects}/${dir.name}/${sessionId}.jsonl`
+    if (await $.fs.exists(candidate)) {
+      file = candidate
+      break
+    }
+  }
+  if (!file) return
+  const ran = await $.process.run(['grep', '-hE', `"name":"(${PLAN_TOOL}|${WRAP_TOOL})"`, file], { timeoutMs: 10_000 })
+  let steps: PlanStep[] = []
+  const past: ArchivedPlan[] = []
+  for (const line of ran.stdout.split('\n')) {
+    let entry: { type?: string; isSidechain?: boolean; timestamp?: string; message?: { content?: unknown } }
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (entry.type !== 'assistant' || entry.isSidechain || !Array.isArray(entry.message?.content)) continue
+    const at = Date.parse(entry.timestamp ?? '') || 0
+    for (const part of entry.message.content as { type?: string; name?: string; input?: Record<string, unknown> }[]) {
+      if (part.type !== 'tool_use' || (part.name !== PLAN_TOOL && part.name !== WRAP_TOOL)) continue
+      const args = part.input ?? {}
+      if (part.name === PLAN_TOOL && Array.isArray(args.items) && steps.length) past.push({ steps, endedAt: at })
+      const next =
+        part.name === WRAP_TOOL ? steps.map((s): PlanStep => ({ ...s, status: 'completed' })) : applyPlanCall(steps, args)
+      steps = at ? stampTimes(steps, next, at) : next
+    }
+  }
+  if (!steps.length) return
+  await update($, plan, cur => (cur.length ? cur : steps))
+  await update($, history, cur => (cur.length ? cur : past.slice(-HISTORY_MAX)))
+}
+
 const gather = async ($: EngineInterface, t: number) => {
   const dir = await sharedDir($)
   const me = await read($, self)
@@ -523,10 +589,10 @@ const stateOfSession = (snap: SessionSnapshot, t: number): SessionState =>
 
 const nameOfSession = (snap: SessionSnapshot) => snap.title || topicFrom(snap.topic ?? '', 60) || w.untitled
 
-// Other sessions, outside the pane: a toast when one starts waiting on the
-// person, and a count of those at work in the status line.
+// Other sessions, outside the pane: a toast when one starts waiting on the person.
 const toasted = new Map<string, number>()
-let lastStatus: string | undefined
+// 0.5.0 counted sessions in the status line; clear what it left there.
+let statusCleared = false
 const tellOthers = async ($: EngineInterface, t: number) => {
   const prefs = await read($, settings)
   const list = await read($, others)
@@ -538,12 +604,9 @@ const tellOthers = async ($: EngineInterface, t: number) => {
       $.ui.toast(w.waitsToast(oneLine(nameOfSession(o), 50)), { timeoutMs: 8_000 })
     }
   }
-  const working = states.filter(x => x.state === 'working').length
-  const waiting = states.filter(x => x.state === 'waiting').length
-  const text = prefs.statusLine !== false && (working || waiting) ? w.statusLine(working, waiting) : undefined
-  if (text !== lastStatus) {
-    lastStatus = text
-    $.ui.status(text)
+  if (!statusCleared) {
+    statusCleared = true
+    $.ui.status(undefined)
   }
 }
 
@@ -596,6 +659,8 @@ export const register: Register = on => {
       const sessionId = await $.session.id()
       const folder = e.cwd.split('/').filter(Boolean).pop() ?? e.cwd
       await update($, self, me => ({ ...me, sessionId, folder }))
+      await restore($, sessionId)
+      await restorePlanFromTranscript($, sessionId).catch(() => {})
     } catch {
       // without an id this session just isn't shared
     }
@@ -952,9 +1017,6 @@ export const register: Register = on => {
         {checkRow('btn-set-tokens', prefs.tokens, w.showTokens, () => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens })))}
         {checkRow('btn-set-notify', prefs.notify !== false, w.notifyWhenWaiting, () =>
           void update($, settings, cur => ({ ...cur, notify: cur.notify === false })),
-        )}
-        {checkRow('btn-set-status', prefs.statusLine !== false, w.countInStatusLine, () =>
-          void update($, settings, cur => ({ ...cur, statusLine: cur.statusLine === false })),
         )}
       </Box>
     ) : null
