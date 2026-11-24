@@ -497,9 +497,9 @@ test('subagent tokens and the session context show, and settings hide them', asy
   expect(svg).toContain('152.4k in context')
 
   await ui.press({ key: 'btn-settings' })
-  expect(await ui.find({ type: 'Text', text: /☑ Token usage/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /☑ Show token usage/ })).toBeTruthy()
   await ui.press({ key: 'btn-set-tokens' })
-  expect(await ui.find({ type: 'Text', text: /☐ Token usage/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /☐ Show token usage/ })).toBeTruthy()
   expect(JSON.stringify(await ui.findAll({ type: 'Svg' }))).not.toContain('tokens')
   await ui.press({ key: 'btn-view-list' })
   expect(await ui.find({ type: 'Text', text: /tokens/ })).toBeFalsy()
@@ -1029,4 +1029,73 @@ test('with its snapshot already empty, a session replays its plan from its trans
   expect(await ui.find({ type: 'Text', text: /3:00/ })).toBeTruthy()
   expect(await ui.find({ type: 'Text', text: /Past plans \(1\)/ })).toBeTruthy()
   await ui.unmount()
+})
+
+const BAND = {
+  plugin: 'subagents-pane',
+  component: 'AbovePrompt',
+  requestId: 'band',
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+} as const
+
+test('the pane opens at the start, and a button above the prompt opens it while it is closed', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let open = false
+  let opens = 0
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => {
+    open = true
+    opens++
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: open ? [{ id: 'subagents', title: 't', isShown: true, isFocused: false, isPlaced: true }] : [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(1_000)
+  expect(opens).toBe(1)
+  let band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
+  await band.unmount()
+
+  open = false
+  await clock.advance(1_000)
+  band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeTruthy()
+  await band.press({ key: 'btn-open-pane' })
+  await clock.advance(1_000)
+  expect(opens).toBe(2)
+  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
+  await band.unmount()
+})
+
+test('opening on its own and the button can be switched off', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  let opens = 0
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => {
+    opens++
+    return { value: { isPlaced: true } }
+  })
+  on('ui.panes', () => ({ value: [] }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.attach', (_, e) => ({ clientId: e.clientId }))
+  on('agent.list', () => ({ value: [] }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'btn-settings' })
+  expect(await ui.find({ type: 'Text', text: /☑.*Open this pane when a session starts/ })).toBeTruthy()
+  await ui.press({ key: 'btn-set-autoopen' })
+  await ui.press({ key: 'btn-set-openbutton' })
+  expect(await ui.find({ type: 'Text', text: /☐.*Button above the prompt/ })).toBeTruthy()
+  await ui.unmount()
+  const before = opens
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await clock.advance(1_000)
+  expect(opens).toBe(before)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
+  await band.unmount()
 })

@@ -69,6 +69,10 @@ export type Words = {
   quietTip: string
   waitsToast: (name: string) => string
   notifyWhenWaiting: string
+  openAtStart: string
+  openButtonOption: string
+  openPane: string
+  openPaneWaiting: (n: number) => string
   openAgentHint: string
 }
 
@@ -132,7 +136,7 @@ const en: Words = {
   durationS: s => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`),
   settings: 'Settings',
   options: 'Options',
-  showTokens: 'Token usage',
+  showTokens: 'Show token usage',
   tokens: n => `${shortCount(n)} tokens`,
   inContext: n => `${shortCount(n)} in context`,
   waitingForYou: '● waiting for you',
@@ -142,6 +146,10 @@ const en: Words = {
   quietTip: 'No tool calls for a while: it may be stuck.',
   waitsToast: name => `“${name}” is waiting for your answer`,
   notifyWhenWaiting: 'Notify when a session waits for me',
+  openAtStart: 'Open this pane when a session starts',
+  openButtonOption: 'Button above the prompt while it is closed',
+  openPane: '◐ Agents, skills & plans',
+  openPaneWaiting: n => `● ${n} waiting for you`,
   openAgentHint: 'Open its conversation',
 }
 

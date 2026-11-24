@@ -109,6 +109,10 @@ export type PaneSettings = {
   tokens: boolean
   /** A toast when another session starts waiting on the user; absent counts as on. */
   notify?: boolean
+  /** Open the pane when a session starts or a window attaches; absent counts as on. */
+  autoOpen?: boolean
+  /** A button above the prompt while the pane is closed; absent counts as on. */
+  openButton?: boolean
 }
 
 /** What the viewer folded or unfolded; keys are `plan:<id>`, `done:<id>`, `session:<id>`. */
@@ -138,6 +142,8 @@ declare module 'claude-code' {
       runs: Shaped<ExternalRun[]>
       turnAt: number
       waitingAt: number
+      paneShown: boolean
+      closedByHand: boolean
     }
   }
 }

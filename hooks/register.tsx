@@ -76,6 +76,10 @@ const turnAt = atom({ plugin: 'subagents-pane', key: 'turnAt' } as const, 0)
 // Since when a permission prompt or a question waits on the user (0: nothing does).
 const waitingAt = atom({ plugin: 'subagents-pane', key: 'waitingAt' } as const, 0)
 const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
+// Whether the pane is drawn and in front: the button above the prompt shows when it is not.
+const paneShown = atom({ plugin: 'subagents-pane', key: 'paneShown' } as const, false)
+// The person closed the pane in this session: a window attaching does not reopen it.
+const closedByHand = atom({ plugin: 'subagents-pane', key: 'closedByHand' } as const, false)
 
 // Newer engines count each agent's tokens on its row; older ones leave it out.
 const tokenCountOf = (info: object) => {
@@ -620,6 +624,27 @@ const markWaiting = async ($: EngineInterface) => {
   }
 }
 
+// ---- opening the pane ----------------------------------------------------------
+
+const notePane = async ($: EngineInterface) => {
+  const shown = (await $.ui.panes()).some(p => p.id === PANE && p.isPlaced && p.isShown)
+  if (shown !== (await read($, paneShown))) await update($, paneShown, () => shown)
+}
+
+// Unasked: at the start, or when a window attaches, unless switched off or closed by hand.
+const openOnItsOwn = async ($: EngineInterface) => {
+  if ((await read($, settings)).autoOpen === false || (await read($, closedByHand))) return
+  await $.ui.open({ id: PANE, title: w.title })
+  await notePane($).catch(() => {})
+}
+
+// Asked: a command or a press, placed at any width.
+const openAsked = async ($: EngineInterface) => {
+  await update($, closedByHand, () => false)
+  await $.ui.open({ id: PANE, title: w.title })
+  await notePane($).catch(() => {})
+}
+
 const tick = async ($: EngineInterface) => {
   await sync($).catch(() => {})
   await readContext($).catch(() => {})
@@ -630,6 +655,7 @@ const tick = async ($: EngineInterface) => {
   await publish($, t).catch(() => {})
   await gather($, t).catch(() => {})
   await tellOthers($, t).catch(() => {})
+  await notePane($).catch(() => {})
   if (isOpen(await read($, fold), 'stats', false)) await readStats($, t).catch(() => {})
   else lastStatsRead = 0
   const anyLive =
@@ -664,7 +690,7 @@ export const register: Register = on => {
     } catch {
       // without an id this session just isn't shared
     }
-    void $.ui.open({ id: PANE, title: w.title })
+    void openOnItsOwn($).catch(() => {})
     $.clock.every(1000, () => void tick($).catch(() => {}))
 
     return next(e)
@@ -699,15 +725,52 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('session.attach', async ($, e, next) => {
+    const result = await next(e)
+    void openOnItsOwn($).catch(() => {})
+    return result
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) {
+      if (e.origin.kind === 'person') await update($, closedByHand, () => true)
+      await update($, paneShown, () => false)
+    }
+    return next(e)
+  })
+
+  // A button above the prompt opens the pane while it is closed or behind another.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const prefs = await read($, settings)
+    if (prefs.openButton === false || e.props.hasSurvey || (await read($, paneShown))) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const t = await $.clock.now()
+    const waiting = (await read($, others)).filter(o => stateOfSession(o, t) === 'waiting').length
+    return (
+      <Box key="open-pane-band" flexDirection="row" gap={1}>
+        <Button key="btn-open-pane" plain hover={{ color: 'text' }} onPress={() => void openAsked($).catch(() => {})}>
+          <Text size="footnote" color="subtle">
+            {w.openPane}
+          </Text>
+        </Button>
+        {waiting > 0 ? (
+          <Text size="footnote" color="warning">
+            {w.openPaneWaiting(waiting)}
+          </Text>
+        ) : null}
+      </Box>
+    )
+  })
+
   on('command.run', { command: 'subagents' }, async $ => {
-    await $.ui.open({ id: PANE, title: w.title })
+    await openAsked($)
 
     return { text: w.opened }
   })
 
   // The same pane under the plugin's new name; /subagents stays for habit.
   on('command.run', { command: 'agents-view' }, async $ => {
-    await $.ui.open({ id: PANE, title: w.title })
+    await openAsked($)
 
     return { text: w.opened }
   })
@@ -1017,6 +1080,12 @@ export const register: Register = on => {
         {checkRow('btn-set-tokens', prefs.tokens, w.showTokens, () => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens })))}
         {checkRow('btn-set-notify', prefs.notify !== false, w.notifyWhenWaiting, () =>
           void update($, settings, cur => ({ ...cur, notify: cur.notify === false })),
+        )}
+        {checkRow('btn-set-autoopen', prefs.autoOpen !== false, w.openAtStart, () =>
+          void update($, settings, cur => ({ ...cur, autoOpen: cur.autoOpen === false })),
+        )}
+        {checkRow('btn-set-openbutton', prefs.openButton !== false, w.openButtonOption, () =>
+          void update($, settings, cur => ({ ...cur, openButton: cur.openButton === false })),
         )}
       </Box>
     ) : null
