@@ -80,6 +80,9 @@ const now = atom({ plugin: 'subagents-pane', key: 'now' } as const, 0)
 const paneShown = atom({ plugin: 'subagents-pane', key: 'paneShown' } as const, false)
 // The person closed the pane in this session: a window attaching does not reopen it.
 const closedByHand = atom({ plugin: 'subagents-pane', key: 'closedByHand' } as const, false)
+// What this session's turn is doing now, read off its spinner; '' between turns.
+const activity = atom({ plugin: 'subagents-pane', key: 'activity' } as const, '')
+let spinnerText = ''
 
 // Newer engines count each agent's tokens on its row; older ones leave it out.
 const tokenCountOf = (info: object) => {
@@ -188,17 +191,24 @@ const applyPlanCall = (steps: PlanStep[], args: Record<string, unknown>): PlanSt
 }
 
 // Carries each step's times over a plan call and stamps the changes: a step
-// that goes in progress starts now, one checked off ends now.
-const stampTimes = (old: PlanStep[], steps: PlanStep[], t: number): PlanStep[] =>
-  steps.map((st, i) => {
+// that goes in progress starts now, one checked off ends now. A step checked
+// off without ever being in progress (skipped over, or closed by wrap-up) is
+// timed from the end of the step before it, or from when its list was written.
+const stampTimes = (old: PlanStep[], steps: PlanStep[], t: number): PlanStep[] => {
+  const out: PlanStep[] = []
+  steps.forEach((st, i) => {
     const was = old[i]?.content === st.content ? old[i] : old.find(o => o.content === st.content)
-    const startedAt = st.startedAt ?? was?.startedAt ?? (st.status === 'in_progress' ? t : undefined)
-    const endedAt = st.status === 'completed' ? (st.endedAt ?? was?.endedAt ?? (startedAt ? t : undefined)) : undefined
-    const next: PlanStep = { content: st.content, status: st.status }
+    const listedAt = st.listedAt ?? was?.listedAt ?? t
+    let startedAt = st.startedAt ?? was?.startedAt ?? (st.status === 'in_progress' ? t : undefined)
+    const endedAt = st.status === 'completed' ? (st.endedAt ?? was?.endedAt ?? t) : undefined
+    if (!startedAt && endedAt) startedAt = Math.min(endedAt, out[i - 1]?.endedAt ?? listedAt)
+    const next: PlanStep = { content: st.content, status: st.status, listedAt }
     if (startedAt && st.status !== 'pending') next.startedAt = startedAt
     if (endedAt) next.endedAt = endedAt
-    return next
+    out.push(next)
   })
+  return out
+}
 
 // ---- the chat's title -------------------------------------------------------
 
@@ -358,6 +368,7 @@ const snapshotOf = async ($: EngineInterface, t: number, isEnded = false): Promi
     ...((await read($, compactAt)) > 0 ? { compactAt: await read($, compactAt) } : {}),
     ...((await read($, turnAt)) > 0 ? { turnAt: await read($, turnAt) } : {}),
     ...((await read($, waitingAt)) > 0 ? { waitingAt: await read($, waitingAt) } : {}),
+    ...((await read($, activity)) ? { activity: await read($, activity) } : {}),
     ...(isEnded ? { isEnded: true } : {}),
   }
 }
@@ -441,7 +452,9 @@ const restore = async ($: EngineInterface, sessionId: string) => {
 // A session whose snapshot was already overwritten empty: replay its plan
 // calls from its transcript, `<projects>/<folder>/<sessionId>.jsonl`.
 const restorePlanFromTranscript = async ($: EngineInterface, sessionId: string) => {
-  if ((await read($, plan)).length) return
+  // Only a session with nothing at all: an empty plan beside past ones is a
+  // plan that was finished and put away, and a reload must leave it so.
+  if ((await read($, plan)).length || (await read($, history)).length) return
   const home = await $.env.get('HOME')
   const projects = `${home ?? ''}/.claude/projects`
   if (!(await $.fs.exists(projects))) return
@@ -455,7 +468,13 @@ const restorePlanFromTranscript = async ($: EngineInterface, sessionId: string) 
     }
   }
   if (!file) return
-  const ran = await $.process.run(['grep', '-hE', `"name":"(${PLAN_TOOL}|${WRAP_TOOL})"`, file], { timeoutMs: 10_000 })
+  // The main conversation's own lines only (a transcript also logs whole
+  // requests, megabytes of them), and the latest of those: a longer output is cut.
+  const ran = await $.process.run(
+    ['sh', '-c', 'grep -E "$1" "$2" | tail -n 60', 'sh', `^\\{"parentUuid":[^,]*,"isSidechain":false,"message":\\{"model":.*"name":"(${PLAN_TOOL}|${WRAP_TOOL})"`, file],
+    { timeoutMs: 10_000 },
+  )
+  if (ran.isStdoutTruncated) return
   let steps: PlanStep[] = []
   const past: ArchivedPlan[] = []
   for (const line of ran.stdout.split('\n')) {
@@ -638,14 +657,18 @@ const openOnItsOwn = async ($: EngineInterface) => {
   await notePane($).catch(() => {})
 }
 
-// Asked: a command or a press, placed at any width.
-const openAsked = async ($: EngineInterface) => {
+// Asked: a command or a press, placed at any width. `forward` also asks the
+// surface to bring it in front of whatever covers it.
+const openAsked = async ($: EngineInterface, forward = false) => {
   await update($, closedByHand, () => false)
-  await $.ui.open({ id: PANE, title: w.title })
+  // An open of an open id only retitles it; closing first makes it a fresh pane the surface puts in front.
+  if (forward && (await $.ui.panes().catch(() => [])).some(p => p.id === PANE)) await $.ui.close({ id: PANE }).catch(() => {})
+  await $.ui.open({ id: PANE, title: w.title, ...(forward ? { focus: true } : {}) })
   await notePane($).catch(() => {})
 }
 
 const tick = async ($: EngineInterface) => {
+  if (spinnerText !== (await read($, activity))) await update($, activity, () => spinnerText).catch(() => {})
   await sync($).catch(() => {})
   await readContext($).catch(() => {})
   await readCompactAt($, await $.clock.now()).catch(() => {})
@@ -661,7 +684,8 @@ const tick = async ($: EngineInterface) => {
   const anyLive =
     (await read($, agents)).some(isLive) ||
     (await read($, waitingAt)) > 0 ||
-    (await read($, others)).some(o => o.agents.some(isLive) || !!o.waitingAt)
+    !!(await read($, activity)) ||
+    (await read($, others)).some(o => o.agents.some(isLive) || !!o.waitingAt || !!o.activity)
   if (anyLive) await update($, now, () => t)
 }
 
@@ -701,6 +725,13 @@ export const register: Register = on => {
       const t = await $.clock.now()
       await update($, turnAt, () => t)
       await update($, waitingAt, () => 0)
+      // A plan all checked off is done with once the user writes again: it
+      // goes to the past plans, and the pane shows what the session does now.
+      const old = await read($, plan)
+      if (old.length > 0 && old.every(st => st.status === 'completed')) {
+        await update($, history, list => [...list, { steps: old, endedAt: t }].slice(-HISTORY_MAX))
+        await update($, plan, () => [])
+      }
     } catch {
       // folding is cosmetic
     }
@@ -739,25 +770,30 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A button above the prompt opens the pane while it is closed or behind another.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const prefs = await read($, settings)
-    if (prefs.openButton === false || e.props.hasSurvey || (await read($, paneShown))) return next(e)
+  // A button at the right of the prompt's footer, beside the app's own mode
+  // labels, opens the pane. The desktop app never says whether its browser or
+  // files cover the pane, so there it stays and brings the pane forward; on
+  // the terminal it shows while the pane is closed.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const engine = await next(e)
+    const isDesktop = e.surface === 'desktop'
+    if ((await read($, settings)).openButton === false || (!isDesktop && (await read($, paneShown)))) return engine
     const { Box, Text, Button } = $.ui.resolve(e)
     const t = await $.clock.now()
     const waiting = (await read($, others)).filter(o => stateOfSession(o, t) === 'waiting').length
     return (
-      <Box key="open-pane-band" flexDirection="row" gap={1}>
-        <Button key="btn-open-pane" plain hover={{ color: 'text' }} onPress={() => void openAsked($).catch(() => {})}>
-          <Text size="footnote" color="subtle">
-            {w.openPane}
-          </Text>
-        </Button>
+      <Box key="footer-open-pane" flexDirection="row" alignItems="center" gap={1}>
+        {engine}
         {waiting > 0 ? (
-          <Text size="footnote" color="warning">
+          <Text size="caption" color="warning">
             {w.openPaneWaiting(waiting)}
           </Text>
         ) : null}
+        <Button key="btn-open-pane-footer" plain hover={{ color: 'text' }} onPress={() => void openAsked($, isDesktop).catch(() => {})}>
+          <Text size="caption" color="subtle">
+            {w.openPane}
+          </Text>
+        </Button>
       </Box>
     )
   })
@@ -797,7 +833,26 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The spinner says what the turn is doing; the pane shows it while no plan step does.
+  // A drawing may not write state, so the line is noted here and the tick stores it.
+  on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    const word = e.props.message || e.props.word
+    spinnerText = word && word !== 'Working' ? word : w.doing[e.props.mode] ?? w.doing.requesting ?? ''
+    return next(e)
+  })
+
+  // an abort names no agent: a subagent's clears the line too, and the spinner's next draw brings it back
+  on('turn.abort', async ($, e, next) => {
+    spinnerText = ''
+    await update($, activity, () => '').catch(() => {})
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
+    if (!e.agentId) {
+      spinnerText = ''
+      await update($, activity, () => '').catch(() => {})
+    }
     // When a turn ends, the skills its caller worked under are done with.
     try {
       await update($, skills, list =>
@@ -1015,6 +1070,27 @@ export const register: Register = on => {
     const rest = await read($, others)
     const mode = await read($, view)
     const show: Show = await read($, shownAtom)
+    const withTimes = (await read($, settings)).times !== false
+    const showG: Show = { ...show, times: withTimes }
+    // While the turn runs and no plan step is under way: what it is doing now.
+    // `apart`: in the graph nothing else spaces it from the frame above and the picture below.
+    const activityRow = (snap: SessionSnapshot, key: string, apart = false) => {
+      if (!snap.activity || snap.plan.some(st => st.status === 'in_progress')) return null
+      const since = snap.turnAt ? clockTime(Math.max(0, t - snap.turnAt)) : ''
+      return (
+        <Box key={key} flexDirection="row" justifyContent="space-between" gap={1} paddingY={apart ? 1 : 0}>
+          <Text size="footnote" wrap="truncate-end">
+            <Text color="claude">◐ </Text>
+            {snap.activity}…
+          </Text>
+          {withTimes && since ? (
+            <Text size="caption" color="subtle">
+              {since}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
     const usage = await read($, stats)
     const prefs = await read($, settings)
     const tokensOf = (n?: number) => (prefs.tokens && n ? w.tokens(n) : '')
@@ -1050,7 +1126,7 @@ export const register: Register = on => {
       </Button>
     )
     // Filters: several may be on, so checkboxes, not segments.
-    const filter = (key: keyof Show, label: string) =>
+    const filter = (key: 'plans' | 'agents' | 'skills', label: string) =>
       checkRow(`btn-show-${key}`, show[key], label, () => void update($, shownAtom, cur => ({ ...cur, [key]: !cur[key] })))
     const allHidden = !show.plans && !show.agents && !show.skills
 
@@ -1080,6 +1156,9 @@ export const register: Register = on => {
         {checkRow('btn-set-tokens', prefs.tokens, w.showTokens, () => void update($, settings, cur => ({ ...cur, tokens: !cur.tokens })))}
         {checkRow('btn-set-notify', prefs.notify !== false, w.notifyWhenWaiting, () =>
           void update($, settings, cur => ({ ...cur, notify: cur.notify === false })),
+        )}
+        {checkRow('btn-set-times', prefs.times !== false, w.showTimes, () =>
+          void update($, settings, cur => ({ ...cur, times: cur.times === false })),
         )}
         {checkRow('btn-set-autoopen', prefs.autoOpen !== false, w.openAtStart, () =>
           void update($, settings, cur => ({ ...cur, autoOpen: cur.autoOpen === false })),
@@ -1142,8 +1221,9 @@ export const register: Register = on => {
       void update($, fold, cur => setOpen(cur, key, open))
     }
     // One fold control everywhere: a quiet line, the triangle on the left.
+    // dimColor on the Button itself: the desktop's native button ignores its Text's colour
     const foldRow = (key: string, open: boolean, label: string) => (
-      <Button key={`btn-${key}`} plain onPress={toggle(key, !open)}>
+      <Button key={`btn-${key}`} plain dimColor hover={{ color: 'text' }} onPress={toggle(key, !open)}>
         <Text size="footnote" color="subtle">
           {open ? '▾' : '▸'} {label}
         </Text>
@@ -1253,7 +1333,7 @@ export const register: Register = on => {
               {st.content}
             </Text>
           </Box>
-          {!!stepTime(st, t) && (
+          {withTimes && !!stepTime(st, t) && (
             <Text size="caption" color="subtle">
               {stepTime(st, t)}
             </Text>
@@ -1523,7 +1603,7 @@ export const register: Register = on => {
         const liveHere = snap.agents.filter(isLive).length
         const past = assignAgents(snap).past
         const history = show.plans ? snap.history ?? [] : []
-        const body = bodyPicture(snap, t, px, show, w, prefs.tokens)
+        const body = bodyPicture(snap, t, px, showG, w, prefs.tokens)
         const hKey = `history:${snap.sessionId}`
         const hOpen = isOpen(f, hKey, false)
         const pastAgents = past.reduce((n, list) => n + list.length, 0)
@@ -1553,6 +1633,7 @@ export const register: Register = on => {
             </Box>
             {sOpen && (
               <Box flexDirection="column" paddingLeft={2}>
+                {activityRow(snap, `g-activity-${snap.sessionId}`, true)}
                 {!body.isEmpty &&
                   picture(
                     body,
@@ -1586,7 +1667,7 @@ export const register: Register = on => {
                           {foldRow(pKey, pOpen, pastLabel(past1.steps))}
                           {pOpen &&
                             picture(
-                              planPicture(snap, n, t, px - 18, show, w, prefs.tokens),
+                              planPicture(snap, n, t, px - 18, showG, w, prefs.tokens),
                               w.pastPlanAlt(past1.steps.length),
                               `${snap.sessionId}-${past1.endedAt}`,
                             )}
@@ -1623,7 +1704,7 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const ownParts = [ownPlan(), agentsPart(mine, true), skillsPart(mine), historyPart(mine)].filter(Boolean)
+    const ownParts = [activityRow(mine, 'own-activity'), ownPlan(), agentsPart(mine, true), skillsPart(mine), historyPart(mine)].filter(Boolean)
     const ownBlock = (
       <Box
         key="own"
@@ -1668,11 +1749,12 @@ export const register: Register = on => {
         <Box key={`other-${snap.sessionId}`} flexDirection="column" paddingX={1}>
           {otherHeader(snap, key, open)}
           <Box flexDirection="column" paddingLeft={2}>
+            {open && activityRow(snap, `activity-${snap.sessionId}`, true)}
             {open && show.plans && snap.plan.length > 0 && steps(snap.plan, `step-${snap.sessionId}`)}
             {open && agentsPart(snap, false)}
             {open && skillsPart(snap)}
             {open && historyPart(snap)}
-            {open && !allHidden && snap.plan.length === 0 && snap.agents.length === 0 && (snap.skills ?? []).length === 0 && (
+            {open && !allHidden && !snap.activity && snap.plan.length === 0 && snap.agents.length === 0 && (snap.skills ?? []).length === 0 && (
               <Text size="footnote" color="subtle">
                 {w.nothingYet}
               </Text>

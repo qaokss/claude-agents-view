@@ -18,11 +18,12 @@
 - **Who is working, who waits for you.** A session at work (a subagent running or a plan step in progress) has a soft glint sweeping along the bottom of its frame in the graph. A session waiting on you (a permission dialog, a question, or a turn that ended on a question) knocks twice and rests, and says `● waiting for you` in the list.
 - **Heads-up outside the pane.** When another session starts waiting for you, a toast says so. It can be turned off under ⚙.
 - **Stuck subagents stand out.** A running subagent that hasn't called a tool for 3 minutes turns amber and says how long it has been quiet (`⚠ quiet 4:10`).
-- **Time per step.** Each plan step shows how long it took, or has taken so far.
+- **What a session is doing now.** Once a plan is done and you write again, it moves to *Past plans*, and the session shows what its turn is doing (`◐ Styling the fold rows… 0:12`) until a new plan starts.
+- **Time per step.** Each plan step shows how long it took, or has taken so far, even one checked off without being started. Switch it off under ⚙.
 - **A filling context warns you.** Within 15% of the point where Claude Code auto-compacts, the session's context count turns amber and says where that is (`145k in context · compacts at 167k`). With auto-compaction off, it warns past 80% of the model's window instead (`172k in context · 86% full`).
 - **Open a subagent from the list.** Press one of this session's subagents in the list view to open its conversation in the main view.
-- **Opens by itself, or with one press.** The pane opens when a session starts. Close it, and a `◐ Agents, skills & plans` button waits above the prompt to bring it back, with `● 1 waiting for you` beside it when a session needs you. No slash command to remember. The button shows wherever Claude Code draws a mod's row above the prompt.
-- **Filters and settings under ⚙.** `☑ Plans ☑ Agents ☑ Skills` — turn any of them off; with plans off the graph becomes a timeline. Token counts, the toast, opening at start and the button are switched there too.
+- **Opens by itself, or with one press.** The pane opens when a session starts. A `◐ AGENTS` button under the prompt brings it back, with `● 1 waiting for you` beside it when a session needs you. No slash command to remember. In the desktop app the button is always there and brings the pane in front of the browser or files; in the terminal it shows while the pane is closed.
+- **Filters and settings under ⚙.** `☑ Plans ☑ Agents ☑ Skills` — turn any of them off; with plans off the graph becomes a timeline. Token counts, step times, the toast, opening at start and the button are switched there too.
 - **Sessions keep their state.** When the app restarts a session, its plan, past plans and subagents come back.
 - **All-time statistics.** Which skills and subagent types you use most, counted from every transcript on your machine.
 
@@ -35,10 +36,22 @@
 
 <sub>The animation and screenshots use made-up demo data.</sub>
 
+## What's new in 0.7
+
+<p align="center">
+  <img src="docs/whats-new-0.7.gif" width="520" alt="Four short scenes: a finished plan moves to past plans when the user writes again, and the session shows what it is doing now; every plan step has a time; a button under the prompt brings the pane in front of the browser; step times switched off under the gear">
+</p>
+
+- **What a session is doing now**, while no plan step is under way; a finished plan moves to *Past plans* once you write again.
+- **Every step has a time**, including steps checked off without being started; steps closed together show `–`. *Show step times* switches them off.
+- **The button moved under the prompt** (`◐ AGENTS`), and in the desktop app it brings the pane in front of the browser or files.
+- *Past plans* and *Finished subagents* are grey again on the desktop.
+- **Fixed:** after a reload a session could show a plan from long ago, read off a cut transcript.
+
 ## What's new in 0.6
 
 - **The pane opens by itself** when a session starts or a window attaches to it, unless you closed it by hand.
-- **A button above the prompt** opens it again while it is closed, and says when a session waits for you.
+- **A button** opens it again and says when a session waits for you.
 - Both can be switched off under ⚙; *Token usage* is now *Show token usage*.
 
 ## What's new in 0.5
@@ -100,7 +113,7 @@ The pane opens by itself when a session starts. If you close it, bring it back w
 | Control | Where | What it does |
 | --- | --- | --- |
 | `List │ Graph` | top right | Switches the view. The graph needs the desktop or mobile app; the terminal shows the list. |
-| `⚙` | top right | Settings: what the pane shows (plans, agents, skills, token usage), the toast, opening at start and the button above the prompt. |
+| `⚙` | top right | Settings: what the pane shows (plans, agents, skills, token usage, step times), the toast, opening at start and the button under the prompt. |
 | `● Plans ● Agents ● Skills` | under it | Shows or hides each kind, for all sessions at once. |
 | `▸` / `▾` | left of a session | Folds what hangs off a session; its name stays. |
 | `collapse all` | above other sessions | Folds or unfolds every other session. |

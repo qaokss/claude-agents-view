@@ -70,6 +70,8 @@ export type Words = {
   waitsToast: (name: string) => string
   notifyWhenWaiting: string
   openAtStart: string
+  showTimes: string
+  doing: Record<string, string>
   openButtonOption: string
   openPane: string
   openPaneWaiting: (n: number) => string
@@ -147,8 +149,11 @@ const en: Words = {
   waitsToast: name => `“${name}” is waiting for your answer`,
   notifyWhenWaiting: 'Notify when a session waits for me',
   openAtStart: 'Open this pane when a session starts',
-  openButtonOption: 'Button above the prompt while it is closed',
-  openPane: '◐ Agents, skills & plans',
+  showTimes: 'Show step times',
+  doing: { thinking: 'Thinking', requesting: 'Working', responding: 'Writing', 'tool-use': 'Using tools', 'tool-input': 'Using tools' },
+  openButtonOption: 'Button under the prompt to open it',
+  // capitals: the desktop's native button in the footer is too short for g, p, y tails
+  openPane: '◐ AGENTS',
   openPaneWaiting: n => `● ${n} waiting for you`,
   openAgentHint: 'Open its conversation',
 }

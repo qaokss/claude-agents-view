@@ -1031,43 +1031,57 @@ test('with its snapshot already empty, a session replays its plan from its trans
   await ui.unmount()
 })
 
-const BAND = {
-  plugin: 'subagents-pane',
-  component: 'AbovePrompt',
-  requestId: 'band',
-  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
-} as const
+const FOOTER = { plugin: 'subagents-pane', component: 'SessionMode', requestId: 'mode', props: { modes: ['focus'] } } as const
 
-test('the pane opens at the start, and a button above the prompt opens it while it is closed', async ($, on) => {
+test('the pane opens at the start, and a button under the prompt opens it', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   let open = false
-  let opens = 0
+  const opens: { focus?: boolean }[] = []
+  let closes = 0
   on('command.register', () => ({ value: { command: 'subagents' } }))
-  on('ui.open', () => {
+  on('ui.open', (_, e) => {
     open = true
-    opens++
+    opens.push(e as { focus?: boolean })
     return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => {
+    closes++
+    open = false
+    return { value: undefined }
   })
   on('ui.panes', () => ({ value: open ? [{ id: 'subagents', title: 't', isShown: true, isFocused: false, isPlaced: true }] : [] }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('agent.list', () => ({ value: [] }))
 
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
   await clock.advance(1_000)
-  expect(opens).toBe(1)
-  let band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
-  await band.unmount()
+  expect(opens).toHaveLength(1)
+  // on the terminal the pane's own word is to be trusted: shown, no button
+  let foot = await $.ui.mount({ ...FOOTER, surface: 'terminal' } as never)
+  expect(await foot.find({ type: 'Text', text: /◐ AGENTS/ })).toBeFalsy()
+  await foot.unmount()
 
   open = false
   await clock.advance(1_000)
-  band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeTruthy()
-  await band.press({ key: 'btn-open-pane' })
+  foot = await $.ui.mount({ ...FOOTER, surface: 'terminal' } as never)
+  expect(await foot.find({ type: 'Text', text: /◐ AGENTS/ })).toBeTruthy()
+  await foot.press({ key: 'btn-open-pane-footer' })
   await clock.advance(1_000)
-  expect(opens).toBe(2)
-  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
-  await band.unmount()
+  expect(opens).toHaveLength(2)
+  expect(opens[1]!.focus).toBeFalsy()
+  expect(await foot.find({ type: 'Text', text: /◐ AGENTS/ })).toBeFalsy()
+  await foot.unmount()
+
+  // the desktop app may cover a shown pane with its own tabs: there the button
+  // stays, and brings the pane forward by opening it afresh
+  const desk = await $.ui.mount({ ...FOOTER, surface: 'desktop' } as never)
+  expect(await desk.find({ type: 'Text', text: /◐ AGENTS/ })).toBeTruthy()
+  const before = opens.length
+  await desk.press({ key: 'btn-open-pane-footer' })
+  expect(closes).toBe(1)
+  expect(opens).toHaveLength(before + 1)
+  expect(opens.at(-1)!.focus).toBe(true)
+  await desk.unmount()
 })
 
 test('opening on its own and the button can be switched off', async ($, on) => {
@@ -1089,13 +1103,98 @@ test('opening on its own and the button can be switched off', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /☑.*Open this pane when a session starts/ })).toBeTruthy()
   await ui.press({ key: 'btn-set-autoopen' })
   await ui.press({ key: 'btn-set-openbutton' })
-  expect(await ui.find({ type: 'Text', text: /☐.*Button above the prompt/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /☐.*Button under the prompt to open it/ })).toBeTruthy()
   await ui.unmount()
   const before = opens
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
   await clock.advance(1_000)
   expect(opens).toBe(before)
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: /Agents, skills & plans/ })).toBeFalsy()
-  await band.unmount()
+  const foot = await $.ui.mount({ ...FOOTER, surface: 'desktop' } as never)
+  expect(await foot.find({ type: 'Text', text: /◐ AGENTS/ })).toBeFalsy()
+  await foot.unmount()
+})
+
+test('a finished plan steps aside for what the turn is doing now, and every step gets a time', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('agent.list', () => ({ value: [] }))
+  on('tool.call', () => ({ result: {} }))
+  on('prompt.submit', (_, e) => ({ text: (e as { text: string }).text }))
+  on('turn.complete', () => ({ text: 'ok' }))
+  on('session.id', () => ({ value: 'me-1' }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [
+    { content: 'Write it', status: 'in_progress' },
+    { content: 'Ship it', status: 'pending' },
+    { content: 'Install it', status: 'pending' },
+  ] } as never)
+  await clock.advance(90_000)
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', done: [1] } as never)
+  await clock.advance(30_000)
+  // the last two were never started: wrap-up closes them together
+  await $.tool.call({ tool: 'mcp__ccd_turn__wrap_up', recap: 'done' } as never)
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'btn-plan:me-1' })
+  expect(await ui.find({ type: 'Text', text: /^1:30$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^0:30$/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /^–$/ })).toBeTruthy()
+  await ui.unmount()
+
+  // the user writes again and the turn just thinks: the old plan goes to the past ones
+  await $.prompt.submit({ text: 'and now the footer' } as never)
+  const spin = await $.ui.mount({
+    plugin: 'subagents-pane', component: 'Spinner', requestId: 'spin', surface: 'desktop',
+    props: { word: 'Testing the footer button', message: null, suffix: '…', mode: 'tool-use' },
+  } as never)
+  await spin.unmount()
+  await clock.advance(45_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Testing the footer button…/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /Ship it/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /Past plans \(1\)/ })).toBeTruthy()
+
+  // times can be switched off
+  await ui.press({ key: 'btn-settings' })
+  await ui.press({ key: 'btn-set-times' })
+  expect(await ui.find({ type: 'Text', text: /^0:45$/ })).toBeFalsy()
+  await ui.unmount()
+
+  await $.turn.complete({ turnId: 'm', reason: 'answer', answer: 'ok' } as never)
+  await clock.advance(1_000)
+  ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Testing the footer button/ })).toBeFalsy()
+  await ui.unmount()
+})
+
+test('a plan finished and put away is not brought back from the transcript on a reload', async ($, on) => {
+  mock.clock(on, { now: 9_000_000 })
+  const saved = {
+    sessionId: 'me-1', title: 'x', folder: 'x', topic: '', updatedAt: 8_900_000, plan: [], agents: [], skills: [],
+    history: [{ steps: [{ content: 'Done before', status: 'completed' }], endedAt: 8_800_000 }],
+  }
+  const stale = JSON.stringify({ type: 'assistant', isSidechain: false, timestamp: '2026-11-20T10:00:00Z', message: { content: [
+    { type: 'tool_use', name: 'mcp__ccd_turn__update_plan', input: { items: [{ content: 'An old plan', status: 'in_progress' }] } },
+  ] } })
+  on('command.register', () => ({ value: { command: 'subagents' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.id', () => ({ value: 'me-1' }))
+  on('agent.list', () => ({ value: [] }))
+  on('env.get', () => ({ value: '/home/u' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: JSON.stringify(saved) }))
+  on('fs.list', (_, e) => ({
+    value: String((e as { path?: string }).path).endsWith('/projects') ? [{ name: '-x', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] : [],
+  }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: stale, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+
+  await $.session.start({ cwd: '/x', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /An old plan/ })).toBeFalsy()
+  expect(await ui.find({ type: 'Text', text: /Past plans \(1\)/ })).toBeTruthy()
+  await ui.unmount()
 })

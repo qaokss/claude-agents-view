@@ -24,7 +24,7 @@ const CHAR = 6.6 // px per character of 12px text, a fair Cyrillic/Latin average
 // The engine's own hand-back at a subagent's end, not the agent's work.
 const INTERNAL = ['SubagentHandback']
 
-export type Show = { plans: boolean; agents: boolean; skills: boolean }
+export type Show = { plans: boolean; agents: boolean; skills: boolean; times?: boolean }
 export const SHOW_ALL: Show = { plans: true, agents: true, skills: true }
 
 const LIVE: AgentStatusWord[] = ['pending', 'running', 'waiting', 'idle']
@@ -37,10 +37,14 @@ export const isStalled = (a: TrackedAgent, now: number) =>
 export const quietMs = (a: TrackedAgent, now: number) => now - (a.activeAt ?? a.startedAt)
 
 // How long a step took, or has taken so far; '' when its start was not seen.
+// Steps checked off together in one call after the first of them took no time
+// of their own: a dash, not 0:00.
 export const stepTime = (st: PlanStep, now: number) =>
   !st.startedAt || st.status === 'pending' || (st.status === 'completed' && !st.endedAt)
     ? ''
-    : clockTime((st.status === 'completed' ? st.endedAt! : Math.max(now, st.startedAt)) - st.startedAt)
+    : st.status === 'completed' && st.endedAt! - st.startedAt < 1000
+      ? '–'
+      : clockTime((st.status === 'completed' ? st.endedAt! : Math.max(now, st.startedAt)) - st.startedAt)
 
 // The context is nearly full: within 15% of the point where auto-compaction
 // runs, or, with it off or not known, past 80% of the model's window.
@@ -452,7 +456,7 @@ const drawPlan = (
   let bottom = top
   const stepChars = Math.floor((leftW - (TEXT_X - PAD)) / CHAR)
   for (const st of steps) {
-    const took = isPast && st.status !== 'completed' ? '' : stepTime(st, now)
+    const took = show.times === false || (isPast && st.status !== 'completed') ? '' : stepTime(st, now)
     const tookW = took ? Math.ceil((took.length * 5.6 + 8) / CHAR) : 0
     const lines = wrap(st.content, stepChars - tookW, 2)
     const textH = lines.length * STEP_LINE + 6

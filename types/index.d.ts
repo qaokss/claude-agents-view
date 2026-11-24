@@ -70,6 +70,8 @@ export type PlanStep = {
   startedAt?: number
   /** When it was checked off. */
   endedAt?: number
+  /** When the list it belongs to was written: where a step checked off without being started is timed from. */
+  listedAt?: number
 }
 
 export type ArchivedPlan = { steps: PlanStep[]; endedAt: number }
@@ -95,6 +97,8 @@ export type SessionSnapshot = {
   turnAt?: number
   /** Since when a permission prompt or a question has waited on the user; absent when nothing does. */
   waitingAt?: number
+  /** What the session's turn is doing now, as its spinner says it (`Testing the footer button`); absent between turns. */
+  activity?: string
 }
 
 export type SelfInfo = {
@@ -113,6 +117,8 @@ export type PaneSettings = {
   autoOpen?: boolean
   /** A button above the prompt while the pane is closed; absent counts as on. */
   openButton?: boolean
+  /** How long each plan step took; absent counts as on. */
+  times?: boolean
 }
 
 /** What the viewer folded or unfolded; keys are `plan:<id>`, `done:<id>`, `session:<id>`. */
@@ -144,6 +150,7 @@ declare module 'claude-code' {
       waitingAt: number
       paneShown: boolean
       closedByHand: boolean
+      activity: string
     }
   }
 }
